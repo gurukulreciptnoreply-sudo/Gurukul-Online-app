@@ -2020,3 +2020,408 @@ async function adminSaveSecurityAndAppSettings() {
     if (ADMIN_STATE.testInputMode === "bulk") updateBulkLiveStatus();
   };
 })();
+/* =====================================================================
+   DROP-IN UPGRADE V2 (js/admin.js):
+   - Separate Sections: Topic-Wise, Weekly & Complete Syllabus Tests
+   - Upcoming Test Scheduler (Date & Time Picker)
+   (Paste at the very bottom of js/admin.js — No changes needed above)
+   ===================================================================== */
+(function () {
+  const DRAFT_KEY = "GURUKUL_ADMIN_CBT_DRAFT_V2";
+
+  const TEST_TYPE_META = {
+    TOPIC_WISE: { label: "Topic-Wise Test", badge: "📘 Topic-Wise", cls: "bg-sky-100 text-sky-800" },
+    WEEKLY: { label: "Weekly Test", badge: "📅 Weekly Test", cls: "bg-violet-100 text-violet-800" },
+    FULL_SYLLABUS: { label: "Complete Syllabus Test", badge: "🎯 Complete Syllabus", cls: "bg-amber-100 text-amber-900" }
+  };
+
+  function normalizeTestType(val) {
+    const v = String(val || "").toUpperCase();
+    if (v === "TOPIC_WISE" || v === "TOPIC") return "TOPIC_WISE";
+    if (v === "WEEKLY") return "WEEKLY";
+    return "FULL_SYLLABUS";
+  }
+
+  function toLocalDatetimeInput(ts) {
+    const n = Number(ts) || 0;
+    if (n <= 0) return "";
+    const d = new Date(n);
+    if (isNaN(d.getTime())) return "";
+    const pad = (x) => String(x).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function formatScheduleLabel(ts) {
+    const n = Number(ts) || 0;
+    if (n <= 0) return "";
+    if (typeof formatDateTime === "function") return formatDateTime(n);
+    return new Date(n).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  function getDefaultMetaV2() {
+    const firstCat = (APP_CONFIG && Array.isArray(APP_CONFIG.categories))
+      ? (APP_CONFIG.categories.find((c) => c !== "All") || "All")
+      : "";
+    return {
+      editingTestId: null,
+      title: "",
+      testType: "TOPIC_WISE",
+      scheduledAt: 0,
+      batchId: "",
+      category: firstCat,
+      duration: 30,
+      plusMark: 4,
+      minusMark: 1
+    };
+  }
+
+  function saveDraftV2() {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        meta: ADMIN_STATE.draftTestMeta || getDefaultMetaV2(),
+        questions: ADMIN_STATE.draftTestQuestions || [],
+        bulkRawText: ADMIN_STATE.bulkRawText || ""
+      }));
+    } catch (e) {}
+  }
+
+  // Ensure existing draft has new fields
+  ADMIN_STATE.draftTestMeta = { ...getDefaultMetaV2(), ...(ADMIN_STATE.draftTestMeta || {}) };
+  ADMIN_STATE.draftTestMeta.testType = normalizeTestType(ADMIN_STATE.draftTestMeta.testType);
+  ADMIN_STATE.adminTestTypeFilter = ADMIN_STATE.adminTestTypeFilter || "ALL";
+
+  const _prevSyncMeta = window.adminSyncTestMeta;
+  window.adminSyncTestMeta = function () {
+    if (typeof _prevSyncMeta === "function") _prevSyncMeta();
+    const m = ADMIN_STATE.draftTestMeta || getDefaultMetaV2();
+    const typeEl = document.getElementById("admTestType");
+    const schedEl = document.getElementById("admTestSchedule");
+
+    if (typeEl) m.testType = normalizeTestType(typeEl.value);
+    if (schedEl) {
+      const ms = schedEl.value ? new Date(schedEl.value).getTime() : 0;
+      m.scheduledAt = (!isNaN(ms) && ms > 0) ? ms : 0;
+    }
+    ADMIN_STATE.draftTestMeta = m;
+    saveDraftV2();
+  };
+
+  window.adminClearTestSchedule = function () {
+    const schedEl = document.getElementById("admTestSchedule");
+    if (schedEl) schedEl.value = "";
+    if (ADMIN_STATE.draftTestMeta) {
+      ADMIN_STATE.draftTestMeta.scheduledAt = 0;
+      saveDraftV2();
+    }
+    showToast("Schedule हटा दिया गया — अब टेस्ट तुरंत Live होगा।", "INFO");
+  };
+
+  const _prevEditPub = window.adminEditPublishedTest;
+  window.adminEditPublishedTest = async function (testId) {
+    const t = ADMIN_STATE.tests && ADMIN_STATE.tests[testId];
+    if (typeof _prevEditPub === "function") {
+      await _prevEditPub(testId);
+    }
+    if (t && ADMIN_STATE.draftTestMeta) {
+      ADMIN_STATE.draftTestMeta.testType = normalizeTestType(t.testType);
+      ADMIN_STATE.draftTestMeta.scheduledAt = Number(t.scheduledAt) || 0;
+      saveDraftV2();
+      renderAdminWorkspace();
+    }
+  };
+
+  window.adminPublishCBTTest = async function () {
+    adminSyncTestMeta();
+    const m = ADMIN_STATE.draftTestMeta || getDefaultMetaV2();
+    const title = String(m.title || "").trim();
+    if (!title || !ADMIN_STATE.draftTestQuestions.length) {
+      return showAppAlert("कृपया टेस्ट का नाम लिखें और कम से कम 1 प्रश्न जोड़ें।", "अधूरा टेस्ट", "DANGER");
+    }
+
+    const batchId = m.batchId || "";
+    const isEdit = Boolean(m.editingTestId);
+    const testId = isEdit ? m.editingTestId : `TST_${Date.now()}`;
+    const prev = (isEdit && ADMIN_STATE.tests[testId]) ? ADMIN_STATE.tests[testId] : {};
+
+    const testType = normalizeTestType(m.testType);
+    const scheduledAt = Number(m.scheduledAt) || 0;
+    const duration = (m.duration !== "" && Number(m.duration) > 0) ? Number(m.duration) : 30;
+    const plusMark = (m.plusMark !== "" && Number(m.plusMark) > 0) ? Number(m.plusMark) : 4;
+    const minusMark = (m.minusMark !== "" && m.minusMark !== null && m.minusMark !== undefined) ? Math.max(0, Number(m.minusMark)) : 0;
+
+    const publicQuestions = ADMIN_STATE.draftTestQuestions.map((item) => {
+      const obj = { q: item.q, A: item.A, B: item.B, C: item.C, D: item.D };
+      if (item.imageUrl) obj.imageUrl = item.imageUrl;
+      return obj;
+    });
+    const secretAnswers = ADMIN_STATE.draftTestQuestions.map((item) => ({
+      correct: item.correct,
+      explanation: item.explanation || ""
+    }));
+
+    await db.ref().update({
+      [`tests/${testId}`]: {
+        testId,
+        title,
+        testType,
+        scheduledAt,
+        batchId,
+        isFree: !batchId,
+        category: m.category || "All",
+        duration,
+        plusMark,
+        minusMark,
+        status: "ACTIVE",
+        questions: publicQuestions,
+        createdAt: prev.createdAt || Date.now(),
+        updatedAt: Date.now()
+      },
+      [`testAnswers/${testId}`]: secretAnswers
+    });
+
+    ADMIN_STATE.draftTestQuestions = [];
+    ADMIN_STATE.draftTestMeta = getDefaultMetaV2();
+    ADMIN_STATE.bulkRawText = "";
+    ADMIN_STATE.editingQuestionIdx = -1;
+    localStorage.removeItem(DRAFT_KEY);
+
+    const isUpcoming = scheduledAt > Date.now();
+    showToast(
+      isUpcoming
+        ? `टेस्ट शेड्यूल हो गया (${formatScheduleLabel(scheduledAt)})!`
+        : (isEdit ? "CBT टेस्ट अपडेट हो गया!" : "ऑनलाइन CBT टेस्ट लाइव हो गया!"),
+      "SUCCESS"
+    );
+    renderAdminWorkspace();
+  };
+
+  window.renderAdminTestsTab = function (container) {
+    const allTests = Object.values(ADMIN_STATE.tests || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const batches = Object.values(ADMIN_STATE.batches || {});
+    const m = { ...getDefaultMetaV2(), ...(ADMIN_STATE.draftTestMeta || {}) };
+    m.testType = normalizeTestType(m.testType);
+    const editQ = (ADMIN_STATE.editingQuestionIdx >= 0) ? ADMIN_STATE.draftTestQuestions[ADMIN_STATE.editingQuestionIdx] : null;
+    const categories = (APP_CONFIG && APP_CONFIG.categories ? APP_CONFIG.categories : []).filter((c) => c !== "All");
+    const now = Date.now();
+
+    const filteredTests = allTests.filter((t) => {
+      const f = ADMIN_STATE.adminTestTypeFilter || "ALL";
+      if (f === "ALL") return true;
+      if (f === "UPCOMING") return (Number(t.scheduledAt) || 0) > now;
+      return normalizeTestType(t.testType) === f;
+    });
+
+    const upcomingCnt = allTests.filter((t) => (Number(t.scheduledAt) || 0) > now).length;
+
+    container.innerHTML = `
+      <div class="grid lg:grid-cols-2 gap-4 text-xs">
+        <!-- Smart CBT Test Builder (Section + Schedule + Bulk || + AutoSave) -->
+        <div class="ed-card p-4 rounded-2xl space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-extrabold text-pink-700">
+              <i class="fa-solid fa-laptop-code mr-1.5"></i> ${m.editingTestId ? "CBT टेस्ट एडिट करें" : "नया ऑनलाइन CBT टेस्ट बनाएं"}
+            </h3>
+            <div class="flex items-center gap-1.5">
+              <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black">Auto-Save ON</span>
+              ${(ADMIN_STATE.draftTestQuestions.length || m.title || m.editingTestId)
+                ? `<button type="button" onclick="adminClearTestDraft()" class="text-rose-600 font-extrabold text-[11px]">Clear Draft</button>`
+                : ""}
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-2">
+            <input type="text" id="admTestTitle" value="${escapeHtml(m.title || "")}" oninput="adminSyncTestMeta()" placeholder="टेस्ट का नाम (जैसे: Science Chapter 1 Test) *" class="ed-input sm:col-span-2 px-3 py-2 rounded-xl font-bold" />
+
+            <!-- Test Section / Type Selector -->
+            <select id="admTestType" onchange="adminSyncTestMeta()" class="ed-input px-3 py-2 rounded-xl font-extrabold text-indigo-900 bg-indigo-50/40">
+              <option value="TOPIC_WISE" ${m.testType === "TOPIC_WISE" ? "selected" : ""}>📘 Topic-Wise Test</option>
+              <option value="WEEKLY" ${m.testType === "WEEKLY" ? "selected" : ""}>📅 Weekly Test</option>
+              <option value="FULL_SYLLABUS" ${m.testType === "FULL_SYLLABUS" ? "selected" : ""}>🎯 Complete Syllabus Test</option>
+            </select>
+
+            <select id="admTestBatch" onchange="adminSyncTestMeta()" class="ed-input px-3 py-2 rounded-xl font-bold">
+              <option value="" ${!m.batchId ? "selected" : ""}>FREE Test (सभी छात्रों के लिए)</option>
+              ${batches.map((b) => `<option value="${escapeHtml(b.batchId)}" ${m.batchId === b.batchId ? "selected" : ""}>Batch: ${escapeHtml(b.title)}</option>`).join("")}
+            </select>
+
+            <select id="admTestCategory" onchange="adminSyncTestMeta()" class="ed-input px-3 py-2 rounded-xl font-bold">
+              ${categories.map((c) => `<option value="${escapeHtml(c)}" ${m.category === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+            </select>
+
+            <div class="grid grid-cols-3 gap-1.5">
+              <input type="number" id="admTestDuration" value="${escapeHtml(String(m.duration ?? 30))}" oninput="adminSyncTestMeta()" placeholder="मिनट" title="समय (मिनट)" class="ed-input px-2 py-2 rounded-xl font-bold" />
+              <input type="number" id="admTestPlus" value="${escapeHtml(String(m.plusMark ?? 4))}" step="0.5" oninput="adminSyncTestMeta()" placeholder="+अंक" title="सही उत्तर के अंक" class="ed-input px-2 py-2 rounded-xl font-bold" />
+              <input type="number" id="admTestMinus" value="${escapeHtml(String(m.minusMark ?? 1))}" step="0.25" min="0" oninput="adminSyncTestMeta()" placeholder="-अंक" title="गलत उत्तर कटौती (0 = No Negative)" class="ed-input px-2 py-2 rounded-xl font-bold" />
+            </div>
+
+            <!-- Upcoming Test Scheduler -->
+            <div class="sm:col-span-2 p-2.5 rounded-xl bg-amber-50/70 border border-amber-200 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <label for="admTestSchedule" class="text-[11px] font-extrabold text-amber-950">
+                  <i class="fa-regular fa-calendar-check text-amber-600 mr-1"></i> Upcoming Schedule (वैकल्पिक — पहले से शेड्यूल करें)
+                </label>
+                ${m.scheduledAt ? `<button type="button" onclick="adminClearTestSchedule()" class="text-[10px] font-extrabold text-rose-600">Remove Schedule</button>` : `<span class="text-[10px] text-slate-500">खाली छोड़ें = तुरंत Live</span>`}
+              </div>
+              <input type="datetime-local" id="admTestSchedule" value="${toLocalDatetimeInput(m.scheduledAt)}" onchange="adminSyncTestMeta()" class="ed-input w-full px-3 py-1.5 rounded-lg bg-white font-bold text-slate-800" />
+            </div>
+          </div>
+
+          <!-- Input Mode Switcher -->
+          <div class="flex gap-1.5 bg-slate-100 p-1 rounded-xl font-extrabold">
+            <button type="button" onclick="adminSwitchTestInputMode('bulk')" class="flex-1 py-2 rounded-lg text-xs transition ${ADMIN_STATE.testInputMode === "bulk" ? "bg-indigo-600 text-white shadow" : "text-slate-700"}">
+              <i class="fa-solid fa-bolt mr-1"></i> Bulk Upload (|| Format)
+            </button>
+            <button type="button" onclick="adminSwitchTestInputMode('single')" class="flex-1 py-2 rounded-lg text-xs transition ${ADMIN_STATE.testInputMode === "single" ? "bg-indigo-600 text-white shadow" : "text-slate-700"}">
+              <i class="fa-solid fa-plus mr-1"></i> ${editQ ? `Edit Q#${ADMIN_STATE.editingQuestionIdx + 1}` : "1-by-1 + Image"}
+            </button>
+          </div>
+
+          ${ADMIN_STATE.testInputMode === "bulk" ? `
+            <div class="bg-slate-50 p-3 rounded-2xl border space-y-2.5">
+              <div class="flex flex-wrap items-center justify-between gap-1.5">
+                <span class="font-extrabold text-slate-800">हर लाइन में 1 प्रश्न (<code>||</code> से अलग करें)</span>
+                <div class="flex gap-1.5">
+                  <button type="button" onclick="adminInsertPipeSample()" class="bg-indigo-100 text-indigo-800 font-bold px-2.5 py-1 rounded-lg text-[10px]">Sample डालें</button>
+                  <label class="bg-slate-800 text-amber-300 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">
+                    <i class="fa-solid fa-file-import mr-1"></i>.txt / .json फ़ाइल
+                    <input type="file" accept=".txt,.json,.csv" onchange="adminHandleBulkFileUpload(this)" class="hidden" />
+                  </label>
+                </div>
+              </div>
+
+              <textarea id="admBulkTextarea" rows="6" oninput="adminOnBulkTextInput(this.value)" placeholder="प्रश्न || Option A || Option B || Option C || Option D || सही उत्तर (A/B/C/D) || व्याख्या (वैकल्पिक) || Image URL (वैकल्पिक)" class="ed-input w-full px-3 py-2 rounded-xl bg-white font-mono text-[11px] leading-relaxed">${escapeHtml(ADMIN_STATE.bulkRawText || "")}</textarea>
+
+              <label class="flex items-center gap-2 text-[11px] font-bold text-slate-600 cursor-pointer">
+                <input type="checkbox" ${ADMIN_STATE.bulkStripNumbering ? "checked" : ""} onchange="ADMIN_STATE.bulkStripNumbering=this.checked; adminOnBulkTextInput(document.getElementById('admBulkTextarea').value);" class="accent-indigo-600" />
+                <span>आगे से अपने-आप "1." या "Q1." हटाएं</span>
+              </label>
+
+              <div id="admBulkStatusBox" class="text-[11px]"></div>
+
+              <button type="button" onclick="adminImportBulkQuestions()" class="w-full bg-slate-900 text-amber-300 font-extrabold py-2.5 rounded-xl shadow">
+                <i class="fa-solid fa-file-circle-plus mr-1"></i> सभी Valid प्रश्न लिस्ट में जोड़ें
+              </button>
+            </div>
+          ` : `
+            <div class="bg-slate-50 p-3 rounded-2xl border space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-extrabold text-slate-800">${editQ ? `प्रश्न #${ADMIN_STATE.editingQuestionIdx + 1} एडिट करें` : "नया प्रश्न जोड़ें"}</span>
+                ${editQ ? `<button type="button" onclick="ADMIN_STATE.editingQuestionIdx=-1; renderAdminWorkspace();" class="text-rose-600 font-bold text-[10px]">Cancel Edit</button>` : ""}
+              </div>
+              <textarea id="admQText" rows="2" placeholder="प्रश्न लिखें..." class="ed-input w-full px-3 py-2 rounded-xl bg-white font-bold">${escapeHtml(editQ?.q || "")}</textarea>
+              <div class="grid grid-cols-2 gap-2">
+                <input type="text" id="admQA" value="${escapeHtml(editQ?.A || "")}" placeholder="Option A" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="text" id="admQB" value="${escapeHtml(editQ?.B || "")}" placeholder="Option B" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="text" id="admQC" value="${escapeHtml(editQ?.C || "")}" placeholder="Option C" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="text" id="admQD" value="${escapeHtml(editQ?.D || "")}" placeholder="Option D" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                <select id="admQCorrect" class="ed-input px-2.5 py-1.5 rounded-lg bg-white font-extrabold">
+                  ${["A", "B", "C", "D"].map((opt) => `<option value="${opt}" ${(editQ?.correct || "A") === opt ? "selected" : ""}>सही: ${opt}</option>`).join("")}
+                </select>
+                <input type="text" id="admQExp" value="${escapeHtml(editQ?.explanation || "")}" placeholder="सॉल्यूशन / व्याख्या (वैकल्पिक)" class="ed-input col-span-2 px-2.5 py-1.5 rounded-lg bg-white" />
+              </div>
+              <div class="grid sm:grid-cols-2 gap-2">
+                <input type="text" id="admQImgUrl" value="${escapeHtml(editQ?.imageUrl || "")}" placeholder="प्रश्न इमेज लिंक (वैकल्पिक)" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="file" id="admQImgFile" accept="image/*" class="ed-input px-2 py-1 rounded-lg bg-white text-[10px]" />
+              </div>
+              <button type="button" onclick="adminPushDraftQuestion()" class="w-full bg-slate-900 text-amber-300 font-extrabold py-2 rounded-xl">
+                ${editQ ? `✅ प्रश्न #${ADMIN_STATE.editingQuestionIdx + 1} अपडेट करें` : "+ लिस्ट में प्रश्न जोड़ें"}
+              </button>
+            </div>
+          `}
+
+          <!-- Added Draft Questions List -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between font-extrabold text-slate-700">
+              <span>जुड़े हुए प्रश्न: <span class="text-indigo-700">${ADMIN_STATE.draftTestQuestions.length}</span></span>
+              ${ADMIN_STATE.draftTestQuestions.length ? `<button type="button" onclick="adminExportDraftAsPipe()" class="text-indigo-600 text-[10px] font-bold"><i class="fa-regular fa-copy mr-1"></i>|| फॉर्मेट कॉपी करें</button>` : ""}
+            </div>
+            ${ADMIN_STATE.draftTestQuestions.length ? `
+              <div class="max-h-48 overflow-y-auto custom-scroll space-y-1.5 pr-1">
+                ${ADMIN_STATE.draftTestQuestions.map((dq, i) => `
+                  <div class="p-2 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-between gap-2">
+                    <div class="min-w-0 flex-1">
+                      <div class="truncate font-bold">Q${i + 1}. ${escapeHtml(dq.q)} <strong class="text-emerald-700">[${dq.correct}]</strong></div>
+                      <div class="text-[10px] text-slate-500 flex gap-2">
+                        ${dq.explanation ? `<span>💡 व्याख्या</span>` : ""}
+                        ${dq.imageUrl ? `<span>🖼️ इमेज</span>` : ""}
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <button type="button" onclick="adminMoveDraftQuestion(${i}, -1)" class="px-1.5 py-0.5 rounded bg-white border text-[10px]">↑</button>
+                      <button type="button" onclick="adminMoveDraftQuestion(${i}, 1)" class="px-1.5 py-0.5 rounded bg-white border text-[10px]">↓</button>
+                      <button type="button" onclick="adminEditDraftQuestion(${i})" class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-bold text-[10px]">Edit</button>
+                      <button type="button" onclick="adminRemoveDraftQuestion(${i})" class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-black text-[10px]">✕</button>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            ` : `<div class="p-3 rounded-xl bg-slate-50 text-center text-slate-400 font-bold">अभी कोई प्रश्न नहीं जुड़ा है।</div>`}
+          </div>
+
+          <button type="button" onclick="adminPublishCBTTest()" class="w-full emerald-gradient text-white font-extrabold py-3 rounded-xl shadow-lg">
+            <i class="fa-solid fa-paper-plane mr-1"></i> ${m.editingTestId ? "अपडेट किया हुआ CBT टेस्ट सेव करें" : "CBT टेस्ट पब्लिश / शेड्यूल करें"}
+          </button>
+        </div>
+
+        <!-- Published & Scheduled Tests List -->
+        <div class="ed-card p-4 rounded-2xl space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-extrabold">CBT टेस्ट लिस्ट (${filteredTests.length}/${allTests.length})</h3>
+          </div>
+
+          <!-- Section Filter Tabs -->
+          <div class="flex flex-wrap gap-1.5 text-[10px] font-extrabold">
+            ${[
+              ["ALL", `All (${allTests.length})`],
+              ["UPCOMING", `⏰ Upcoming (${upcomingCnt})`],
+              ["TOPIC_WISE", "📘 Topic-Wise"],
+              ["WEEKLY", "📅 Weekly"],
+              ["FULL_SYLLABUS", "🎯 Complete Syllabus"]
+            ].map(([k, lbl]) => `
+              <button type="button" onclick="ADMIN_STATE.adminTestTypeFilter='${k}'; renderAdminWorkspace();" class="px-2.5 py-1 rounded-lg ${(ADMIN_STATE.adminTestTypeFilter || "ALL") === k ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-700"}">${lbl}</button>
+            `).join("")}
+          </div>
+
+          <div class="space-y-2.5 max-h-[540px] overflow-y-auto custom-scroll">
+            ${filteredTests.length ? filteredTests.map((t) => {
+              const attCnt = Object.keys((ADMIN_STATE.testAttempts && ADMIN_STATE.testAttempts[t.testId]) || {}).length;
+              const minusVal = (t.minusMark !== undefined && t.minusMark !== null) ? t.minusMark : 1;
+              const tMeta = TEST_TYPE_META[normalizeTestType(t.testType)];
+              const schedMs = Number(t.scheduledAt) || 0;
+              const isUpcoming = schedMs > now;
+
+              return `
+                <div class="p-3 rounded-xl ${isUpcoming ? "bg-amber-50/60 border-amber-300" : "bg-slate-50 border-slate-200"} border space-y-1.5">
+                  <div class="flex flex-wrap items-center justify-between gap-1.5">
+                    <div class="flex flex-wrap items-center gap-1">
+                      <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${tMeta.cls}">${tMeta.badge}</span>
+                      <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${t.isFree ? "bg-emerald-100 text-emerald-800" : "bg-pink-100 text-pink-800"}">${t.isFree ? "FREE" : "BATCH"}</span>
+                      ${isUpcoming ? `<span class="px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-400 text-slate-950">⏰ UPCOMING</span>` : ""}
+                    </div>
+                    <span class="text-[10px] font-bold text-indigo-700">${attCnt} छात्रों ने दिया</span>
+                  </div>
+                  <div class="font-extrabold text-sm text-slate-900">${escapeHtml(t.title)}</div>
+                  ${isUpcoming ? `<div class="text-[11px] font-extrabold text-amber-800"><i class="fa-regular fa-clock mr-1"></i>शेड्यूल समय: ${escapeHtml(formatScheduleLabel(schedMs))}</div>` : ""}
+                  <div class="text-[11px] text-slate-500">${(t.questions || []).length} सवाल • ${t.duration} Min • +${t.plusMark}/-${minusVal}</div>
+                  <div class="flex flex-wrap gap-1.5 pt-1">
+                    <button type="button" onclick="adminEditPublishedTest('${escapeHtml(t.testId)}')" class="bg-amber-100 text-amber-900 font-bold px-3 py-1.5 rounded-lg text-[10px]"><i class="fa-solid fa-pen mr-1"></i>Edit Test</button>
+                    <button type="button" onclick="adminViewTestLeaderboard('${escapeHtml(t.testId)}')" class="bg-indigo-600 text-white font-bold px-3 py-1.5 rounded-lg text-[10px]">रैंक लिस्ट देखें</button>
+                    <button type="button" onclick="adminDeleteCBTTest('${escapeHtml(t.testId)}')" class="bg-rose-100 text-rose-700 font-bold px-3 py-1.5 rounded-lg text-[10px]">हटाएं</button>
+                  </div>
+                </div>
+              `;
+            }).join("") : `<p class="text-center text-slate-400 py-8">इस सेक्शन में कोई टेस्ट नहीं है।</p>`}
+          </div>
+        </div>
+      </div>
+    `;
+
+    if (ADMIN_STATE.testInputMode === "bulk" && typeof updateBulkLiveStatus === "function") {
+      // Trigger live status update
+      const ta = document.getElementById("admBulkTextarea");
+      if (ta && typeof adminOnBulkTextInput === "function") adminOnBulkTextInput(ta.value);
+    }
+  };
+})();
