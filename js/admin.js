@@ -1,0 +1,1407 @@
+/* =====================================================================
+   GURUKUL ONLINE APP — COMPLETE ADMIN MASTER CONTROL PANEL (8 MODULES)
+   File: js/admin.js
+   ===================================================================== */
+
+const ADMIN_STATE = {
+  activeTab: "payments",
+  users: {},
+  enrollments: {},
+  orders: {},         // Nested: orders[uid][orderId]
+  batches: {},
+  books: {},
+  tests: {},
+  testAttempts: {},
+  doubts: {},         // Nested: doubts[uid][doubtId]
+  coupons: {},
+  fcmTokens: {},
+  securityLogs: {},
+  selectedBatchForContent: "",
+  selectedBatchContentItems: {},
+  paymentFilter: "PENDING_VERIFICATION",
+  doubtFilter: "PENDING",
+  studentSearch: "",
+  draftTestQuestions: [],
+  editingBatchId: null,
+  editingBookId: null,
+  knownPendingCount: -1
+};
+
+// =========================================================
+// 1. ADMIN BOOTSTRAP & REALTIME MASTER LISTENERS
+// =========================================================
+function initAdminDashboard() {
+  ADMIN_STATE.knownPendingCount = -1;
+
+  trackRealtimeRef(db.ref("users"), "value", (snap) => {
+    ADMIN_STATE.users = snap.val() || {};
+    updateAdminKPIStats();
+    if (ADMIN_STATE.activeTab === "students") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("enrollments"), "value", (snap) => {
+    ADMIN_STATE.enrollments = snap.val() || {};
+    if (ADMIN_STATE.activeTab === "students") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("orders"), "value", (snap) => {
+    ADMIN_STATE.orders = snap.val() || {};
+    const flat = getAllOrdersFlat();
+    const pendingCnt = flat.filter((o) => o.status === "PENDING_VERIFICATION").length;
+
+    if (ADMIN_STATE.knownPendingCount !== -1 && pendingCnt > ADMIN_STATE.knownPendingCount) {
+      triggerAlertFeedback();
+      showToast("💰 नया UPI पेमेंट अप्रूवल के लिए आया है!", "WARNING");
+    }
+    ADMIN_STATE.knownPendingCount = pendingCnt;
+
+    updateAdminKPIStats();
+    if (ADMIN_STATE.activeTab === "payments" || ADMIN_STATE.activeTab === "books") {
+      renderAdminWorkspace();
+    }
+  });
+
+  trackRealtimeRef(db.ref("batches"), "value", (snap) => {
+    ADMIN_STATE.batches = snap.val() || {};
+    APP_STATE.batches = ADMIN_STATE.batches;
+    updateAdminKPIStats();
+    if (ADMIN_STATE.activeTab === "batches" || ADMIN_STATE.activeTab === "tests" || ADMIN_STATE.activeTab === "marketing") {
+      renderAdminWorkspace();
+    }
+  });
+
+  trackRealtimeRef(db.ref("books"), "value", (snap) => {
+    ADMIN_STATE.books = snap.val() || {};
+    APP_STATE.books = ADMIN_STATE.books;
+    updateAdminKPIStats();
+    if (ADMIN_STATE.activeTab === "books") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("tests"), "value", (snap) => {
+    ADMIN_STATE.tests = snap.val() || {};
+    APP_STATE.tests = ADMIN_STATE.tests;
+    if (ADMIN_STATE.activeTab === "tests") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("testAttempts"), "value", (snap) => {
+    ADMIN_STATE.testAttempts = snap.val() || {};
+    if (ADMIN_STATE.activeTab === "tests") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("doubts"), "value", (snap) => {
+    ADMIN_STATE.doubts = snap.val() || {};
+    if (ADMIN_STATE.activeTab === "doubts") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("coupons"), "value", (snap) => {
+    ADMIN_STATE.coupons = snap.val() || {};
+    if (ADMIN_STATE.activeTab === "marketing") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("fcmTokens"), "value", (snap) => {
+    ADMIN_STATE.fcmTokens = snap.val() || {};
+    if (ADMIN_STATE.activeTab === "marketing") renderAdminWorkspace();
+  });
+
+  trackRealtimeRef(db.ref("securityLogs").limitToLast(60), "value", (snap) => {
+    ADMIN_STATE.securityLogs = snap.val() || {};
+    if (ADMIN_STATE.activeTab === "settings") renderAdminWorkspace();
+  });
+
+  switchAdminTab("payments");
+  adminCheckEmailQuotaUI(true);
+}
+
+function getAllOrdersFlat() {
+  const list = [];
+  Object.entries(ADMIN_STATE.orders || {}).forEach(([uid, userOrders]) => {
+    if (!userOrders) return;
+    Object.values(userOrders).forEach((ord) => {
+      if (ord && ord.orderId) list.push({ ...ord, uid: ord.uid || uid });
+    });
+  });
+  return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+function getAllDoubtsFlat() {
+  const list = [];
+  Object.entries(ADMIN_STATE.doubts || {}).forEach(([uid, userDoubts]) => {
+    if (!userDoubts) return;
+    Object.values(userDoubts).forEach((d) => {
+      if (d && d.doubtId) list.push({ ...d, uid: d.uid || uid });
+    });
+  });
+  return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+function updateAdminKPIStats() {
+  const orders = getAllOrdersFlat();
+  const approvedRev = orders
+    .filter((o) => o.status === "APPROVED")
+    .reduce((sum, o) => sum + (Number(o.finalAmount) || 0), 0);
+  const pendingPay = orders.filter((o) => o.status === "PENDING_VERIFICATION").length;
+  const studentCnt = Object.keys(ADMIN_STATE.users || {}).length;
+  const batchCnt = Object.keys(ADMIN_STATE.batches || {}).length;
+  const bookCnt = Object.keys(ADMIN_STATE.books || {}).length;
+
+  const rEl = document.getElementById("statAdminRevenue");
+  const sEl = document.getElementById("statAdminStudents");
+  const pEl = document.getElementById("statAdminPendingPay");
+  const cEl = document.getElementById("statAdminCatalog");
+
+  if (rEl) rEl.textContent = formatCurrency(approvedRev);
+  if (sEl) sEl.textContent = studentCnt;
+  if (pEl) pEl.textContent = pendingPay;
+  if (cEl) cEl.textContent = `${batchCnt} / ${bookCnt}`;
+}
+
+async function adminCheckEmailQuotaUI(silent = false) {
+  const lbl = document.getElementById("adminEmailQuotaLabel");
+  if (lbl) lbl.textContent = "Checking...";
+  const res = await checkAllEmailServersQuota();
+  if (lbl) lbl.textContent = `Quota: ${res.totalQuota}/200`;
+
+  if (!silent) {
+    const lines = res.servers.map((s, i) => `${i + 1}. ${s.name}: ${s.quotaLeft} ईमेल शेष (${s.status})`).join("\n");
+    await showAppAlert(`आज का कुल बचा हुआ ईमेल कोटा: ${res.totalQuota}\n\n${lines}`, "Email OTP & Receipt Pool Status", "INFO");
+  }
+}
+
+function switchAdminTab(tabName) {
+  ADMIN_STATE.activeTab = tabName;
+  document.querySelectorAll(".admin-tab-btn").forEach((b) => b.classList.remove("active-admin-tab"));
+  const activeBtn = document.getElementById(`admTabBtn_${tabName}`);
+  if (activeBtn) activeBtn.classList.add("active-admin-tab");
+  renderAdminWorkspace();
+}
+
+function renderAdminWorkspace() {
+  const container = document.getElementById("adminWorkspaceContainer");
+  if (!container) return;
+
+  switch (ADMIN_STATE.activeTab) {
+    case "payments": return renderAdminPaymentsTab(container);
+    case "batches": return renderAdminBatchesTab(container);
+    case "tests": return renderAdminTestsTab(container);
+    case "books": return renderAdminBooksTab(container);
+    case "students": return renderAdminStudentsTab(container);
+    case "doubts": return renderAdminDoubtsTab(container);
+    case "marketing": return renderAdminMarketingTab(container);
+    case "settings": return renderAdminSettingsTab(container);
+  }
+}
+
+// =========================================================
+// TAB 1: PAYMENTS VERIFICATION & 1-CLICK APPROVAL DESK
+// =========================================================
+function renderAdminPaymentsTab(container) {
+  const all = getAllOrdersFlat();
+  const counts = {
+    PENDING_VERIFICATION: all.filter((o) => o.status === "PENDING_VERIFICATION").length,
+    APPROVED: all.filter((o) => o.status === "APPROVED").length,
+    UTR_CORRECTION_REQUIRED: all.filter((o) => o.status === "UTR_CORRECTION_REQUIRED").length,
+    REJECTED: all.filter((o) => o.status === "REJECTED").length,
+    ALL: all.length
+  };
+
+  const filtered = ADMIN_STATE.paymentFilter === "ALL"
+    ? all
+    : all.filter((o) => o.status === ADMIN_STATE.paymentFilter);
+
+  container.innerHTML = `
+    <div class="ed-card p-4 rounded-2xl space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-sm sm:text-base font-extrabold"><i class="fa-solid fa-indian-rupee-sign text-emerald-600 mr-1.5"></i> UPI पेमेंट वेरिफिकेशन डेस्क (1-Click Approve)</h2>
+        <div class="flex flex-wrap gap-1.5 text-[11px] font-extrabold">
+          ${[
+            ["PENDING_VERIFICATION", `⏳ Pending (${counts.PENDING_VERIFICATION})`],
+            ["APPROVED", `✅ Approved (${counts.APPROVED})`],
+            ["UTR_CORRECTION_REQUIRED", `⚠️ UTR Fix (${counts.UTR_CORRECTION_REQUIRED})`],
+            ["REJECTED", `❌ Rejected (${counts.REJECTED})`],
+            ["ALL", `All (${counts.ALL})`]
+          ].map(([key, lbl]) => `
+            <button type="button" onclick="ADMIN_STATE.paymentFilter='${key}'; renderAdminWorkspace();" class="px-3 py-1.5 rounded-xl ${ADMIN_STATE.paymentFilter === key ? "bg-indigo-600 text-white shadow" : "bg-slate-100 text-slate-700"}">${lbl}</button>
+          `).join("")}
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        ${filtered.length ? filtered.map((o) => `
+          <div class="p-4 rounded-2xl border ${o.status === "PENDING_VERIFICATION" ? "border-amber-400 bg-amber-50/40" : "border-slate-200 bg-slate-50"} space-y-2.5 text-xs">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-mono font-black text-indigo-700">${escapeHtml(o.orderId)}</span>
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-black ${o.orderType === "BOOK" ? "bg-amber-200 text-amber-950" : "bg-indigo-100 text-indigo-800"}">${o.orderType}</span>
+                <span class="text-[10px] text-slate-500">${formatDateTime(o.createdAt)}</span>
+              </div>
+              <span class="text-base font-black text-emerald-700">${formatCurrency(o.finalAmount)}</span>
+            </div>
+
+            <div class="grid sm:grid-cols-2 gap-2 bg-white p-3 rounded-xl border">
+              <div>
+                <div class="font-extrabold text-slate-900">${escapeHtml(o.title)}</div>
+                <div class="text-[11px] text-slate-600 mt-0.5">छात्र: <strong>${escapeHtml(o.studentName)}</strong> (${escapeHtml(o.studentPhone || "-")})</div>
+                <div class="text-[11px] text-slate-500">${escapeHtml(o.studentEmail || "")}</div>
+              </div>
+              <div class="space-y-0.5">
+                <div class="text-[11px]">UTR / Ref No: <strong class="font-mono text-sm text-rose-700 bg-rose-50 px-2 py-0.5 rounded">${escapeHtml(o.utrNumber || "-")}</strong></div>
+                <div class="text-[11px] text-slate-600">Paid To UPI: <strong>${escapeHtml(o.paidToUpi || "-")}</strong></div>
+                <div class="text-[11px] font-bold">Status: <span class="text-indigo-700">${escapeHtml(o.status)}</span></div>
+              </div>
+            </div>
+
+            ${o.proofBase64 ? `
+              <div>
+                <button type="button" onclick="adminPreviewOrderProof('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="bg-slate-800 text-amber-300 font-bold px-3 py-1.5 rounded-xl text-[11px]">
+                  <i class="fa-solid fa-image mr-1"></i> पेमेंट स्क्रीनशॉट देखें
+                </button>
+              </div>
+            ` : ""}
+
+            <div class="flex flex-wrap gap-2 pt-1">
+              ${o.status !== "APPROVED" ? `
+                <button type="button" onclick="adminApproveOrder('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="emerald-gradient text-white font-extrabold px-4 py-2 rounded-xl text-xs shadow">
+                  <i class="fa-solid fa-circle-check mr-1"></i> 1-Click Approve & Activate
+                </button>
+                <button type="button" onclick="adminRequestUtrFix('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="bg-amber-500 text-slate-950 font-extrabold px-3.5 py-2 rounded-xl text-xs">
+                  <i class="fa-solid fa-pen mr-1"></i> UTR सुधार मांगें
+                </button>
+                <button type="button" onclick="adminRejectOrder('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="bg-rose-600 text-white font-extrabold px-3.5 py-2 rounded-xl text-xs">
+                  <i class="fa-solid fa-xmark mr-1"></i> Reject
+                </button>
+              ` : ""}
+              <button type="button" onclick="adminDownloadOrderReceipt('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="bg-slate-900 text-amber-300 font-bold px-3.5 py-2 rounded-xl text-xs">
+                <i class="fa-solid fa-file-pdf mr-1"></i> Receipt PDF
+              </button>
+              <a href="${buildWhatsAppHelpLink(`Namaste ${o.studentName}, aapke GURUKUL ONLINE APP order ${o.orderId} (${o.title}) ke sambandh me:`)}" target="_blank" class="bg-emerald-100 text-emerald-800 font-extrabold px-3 py-2 rounded-xl text-xs">
+                <i class="fa-brands fa-whatsapp mr-1"></i> Student WhatsApp
+              </a>
+            </div>
+          </div>
+        `).join("") : `<div class="p-8 text-center text-xs font-bold text-slate-400">इस कैटेगरी में कोई पेमेंट ऑर्डर नहीं है।</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function adminPreviewOrderProof(uid, orderId) {
+  const ord = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (ord && ord.proofBase64) previewDoubtFullImage(ord.proofBase64);
+}
+
+function adminDownloadOrderReceipt(uid, orderId) {
+  const ord = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (ord) generateOrderReceiptPDF(orderId, ord);
+}
+
+async function adminApproveOrder(uid, orderId) {
+  const ord = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (!ord) return;
+
+  const ok = await showAppConfirm(
+    `क्या आपने बैंक/UPI में ${formatCurrency(ord.finalAmount)} (UTR: ${ord.utrNumber}) मिला लिया है?\n\nApprove करते ही छात्र (${ord.studentName}) का ${ord.orderType === "BOOK" ? "बुक ऑर्डर कन्फर्म" : "कोर्स तुरंत चालू"} हो जाएगा और उसे ईमेल व नोटिफिकेशन मिल जाएगा।`,
+    "पेमेंट अप्रूवल पुष्टि"
+  );
+  if (!ok) return;
+
+  try {
+    const updates = {};
+    updates[`orders/${uid}/${orderId}/status`] = "APPROVED";
+    updates[`orders/${uid}/${orderId}/approvedAt`] = Date.now();
+    updates[`orders/${uid}/${orderId}/updatedAt`] = Date.now();
+    updates[`orders/${uid}/${orderId}/adminNote`] = "पेमेंट सफलतापूर्वक वेरीफाई हो गया है। धन्यवाद!";
+
+    if (ord.orderType === "COURSE" && ord.itemId) {
+      const days = Number(ord.validityDays) || 365;
+      updates[`enrollments/${uid}/${ord.itemId}`] = {
+        batchId: ord.itemId,
+        batchTitle: ord.title,
+        active: true,
+        isFreeEnroll: false,
+        orderId: ord.orderId,
+        enrolledAt: Date.now(),
+        expiresAt: Date.now() + days * 86400000
+      };
+    } else if (ord.orderType === "BOOK") {
+      updates[`orders/${uid}/${orderId}/shippingStatus`] = "PLACED";
+      // Auto decrement stock
+      if (Array.isArray(ord.items)) {
+        ord.items.forEach((it) => {
+          const bk = ADMIN_STATE.books[it.bookId];
+          if (bk) {
+            const nextStock = Math.max(0, (Number(bk.stock) || 0) - (Number(it.qty) || 1));
+            updates[`books/${it.bookId}/stock`] = nextStock;
+          }
+        });
+      }
+    }
+
+    // Personal notification to student
+    const notifId = `NTF_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+    updates[`notifications/${notifId}`] = {
+      id: notifId,
+      targetType: "USER",
+      targetValue: uid,
+      title: ord.orderType === "BOOK" ? "🎉 बुक ऑर्डर कन्फर्म हो गया!" : "🎉 आपका कोर्स एक्टिवेट हो गया है!",
+      message: `${ord.title} (${formatCurrency(ord.finalAmount)}) का पेमेंट अप्रूव हो गया है। ${ord.orderType === "BOOK" ? "आपका पार्सल जल्द पैक होकर डिस्पैच किया जाएगा।" : "My Study टैब में जाकर पढ़ाई शुरू करें!"}`,
+      createdAt: Date.now()
+    };
+
+    await db.ref().update(updates);
+    showToast("पेमेंट अप्रूव और एक्टिवेट हो गया!", "SUCCESS");
+
+    // Official Approval Email
+    if (ord.studentEmail) {
+      sendAppEmail({
+        to: ord.studentEmail,
+        type: "RECEIPT",
+        subject: `✅ पेमेंट अप्रूव्ड: ${ord.title} (${ord.orderId})`,
+        htmlBody: buildOfficialEmailHTML({
+          heading: ord.orderType === "BOOK" ? "आपका बुक ऑर्डर कन्फर्म हो गया है!" : "आपका ऑनलाइन कोर्स चालू हो गया है! 🎉",
+          userName: ord.studentName,
+          bodyHtml: `
+            <p>बधाई हो! आपका <strong>${formatCurrency(ord.finalAmount)}</strong> का पेमेंट (UTR: <strong>${escapeHtml(ord.utrNumber)}</strong>) वेरीफाई कर लिया गया है।</p>
+            <p><strong>विवरण:</strong> ${escapeHtml(ord.title)}<br/><strong>Order ID:</strong> ${escapeHtml(ord.orderId)}</p>
+            <p>अब आप ऐप में लॉगिन करके अपनी ऑफिशियल रसीद/इनवॉइस डाउनलोड कर सकते हैं।</p>
+          `
+        })
+      }).catch(() => {});
+    }
+  } catch (err) {
+    await showAppAlert("अप्रूव करने में त्रुटि: " + err.message, "Error", "DANGER");
+  }
+}
+
+async function adminRequestUtrFix(uid, orderId) {
+  const ord = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (!ord) return;
+  const reason = await showAppPrompt(
+    "छात्र के लिए कारण लिखें (ताकि वह बिना घबराए सही 12-अंकों का UTR दोबारा डाल सके):",
+    "दर्ज किया गया UTR नंबर हमारे बैंक स्टेटमेंट से मैच नहीं हुआ। कृपया सही 12-अंकों का UTR दोबारा सबमिट करें।",
+    "UTR सुधार अनुरोध"
+  );
+  if (!reason) return;
+
+  const notifId = `NTF_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  await db.ref().update({
+    [`orders/${uid}/${orderId}/status`]: "UTR_CORRECTION_REQUIRED",
+    [`orders/${uid}/${orderId}/adminNote`]: reason,
+    [`orders/${uid}/${orderId}/updatedAt`]: Date.now(),
+    [`notifications/${notifId}`]: {
+      id: notifId,
+      targetType: "USER",
+      targetValue: uid,
+      title: "⚠️ UTR नंबर सुधारें (घबराएं नहीं)",
+      message: `Order ${orderId}: ${reason}`,
+      createdAt: Date.now()
+    }
+  });
+  showToast("छात्र को UTR सुधारने का अनुरोध भेज दिया गया।", "WARNING");
+}
+
+async function adminRejectOrder(uid, orderId) {
+  const reason = await showAppPrompt("अस्वीकृत (Reject) करने का स्पष्ट कारण लिखें:", "पेमेंट प्राप्त नहीं हुआ / अमान्य UTR।", "ऑर्डर Reject करें");
+  if (!reason) return;
+
+  const notifId = `NTF_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  await db.ref().update({
+    [`orders/${uid}/${orderId}/status`]: "REJECTED",
+    [`orders/${uid}/${orderId}/adminNote`]: reason,
+    [`orders/${uid}/${orderId}/updatedAt`]: Date.now(),
+    [`notifications/${notifId}`]: {
+      id: notifId,
+      targetType: "USER",
+      targetValue: uid,
+      title: "❌ पेमेंट ऑर्डर अस्वीकृत",
+      message: `Order ${orderId} अस्वीकृत किया गया। कारण: ${reason}। सहायता हेतु हेल्पलाइन पर संपर्क करें।`,
+      createdAt: Date.now()
+    }
+  });
+  showToast("ऑर्डर Reject कर दिया गया।", "INFO");
+}
+
+// =========================================================
+// TAB 2: BATCH BUILDER & PROTECTED CONTENT MANAGER
+// =========================================================
+function renderAdminBatchesTab(container) {
+  const batches = Object.values(ADMIN_STATE.batches || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const editB = ADMIN_STATE.editingBatchId ? ADMIN_STATE.batches[ADMIN_STATE.editingBatchId] : null;
+  const selBatchId = ADMIN_STATE.selectedBatchForContent || (batches[0] ? batches[0].batchId : "");
+  if (selBatchId && selBatchId !== ADMIN_STATE.selectedBatchForContent) {
+    ADMIN_STATE.selectedBatchForContent = selBatchId;
+    loadAdminBatchContentItems(selBatchId);
+  }
+
+  const contentItems = Object.values(ADMIN_STATE.selectedBatchContentItems || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  container.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4">
+      <!-- Create / Edit Batch Form -->
+      <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-extrabold text-indigo-800"><i class="fa-solid fa-plus-circle mr-1"></i> ${editB ? "बैच एडिट करें" : "नया ऑनलाइन बैच बनाएं"}</h3>
+          ${editB ? `<button type="button" onclick="ADMIN_STATE.editingBatchId=null; renderAdminWorkspace();" class="text-rose-600 font-bold">Cancel Edit</button>` : ""}
+        </div>
+
+        <div class="grid sm:grid-cols-2 gap-2.5">
+          <input type="text" id="admBatchTitle" value="${escapeHtml(editB?.title || "")}" placeholder="बैच का नाम (जैसे: Class 12 Science Board 2027) *" class="ed-input sm:col-span-2 px-3 py-2 rounded-xl font-bold" />
+          <select id="admBatchCategory" class="ed-input px-3 py-2 rounded-xl font-bold">
+            ${APP_CONFIG.categories.filter((c) => c !== "All").map((c) => `<option value="${escapeHtml(c)}" ${editB?.category === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+          </select>
+          <select id="admBatchIsFree" class="ed-input px-3 py-2 rounded-xl font-bold">
+            <option value="false" ${!editB?.isFree ? "selected" : ""}>Paid Batch (सशुल्क)</option>
+            <option value="true" ${editB?.isFree ? "selected" : ""}>Free Batch (बिल्कुल फ्री)</option>
+          </select>
+          <input type="number" id="admBatchMrp" value="${editB?.mrp ?? 999}" placeholder="MRP (₹)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <input type="number" id="admBatchOffer" value="${editB?.offerPrice ?? 499}" placeholder="Offer Price (₹)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <input type="number" id="admBatchValidity" value="${editB?.validityDays ?? 365}" placeholder="वैधता (दिनों में)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <input type="text" id="admBatchMedium" value="${escapeHtml(editB?.medium || "Hindi Medium")}" placeholder="माध्यम (Hindi/English)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+        </div>
+
+        <input type="text" id="admBatchThumbUrl" value="${escapeHtml(editB?.thumbnail || "")}" placeholder="बैनर/थंबनेल इमेज लिंक (या नीचे फोटो अपलोड करें)" class="ed-input w-full px-3 py-2 rounded-xl" />
+        <input type="file" id="admBatchThumbFile" accept="image/*" class="ed-input w-full px-3 py-1.5 rounded-xl" />
+        <input type="text" id="admBatchDemoUrl" value="${escapeHtml(editB?.demoVideoUrl || "")}" placeholder="फ्री डेमो वीडियो YouTube Unlisted लिंक (वैकल्पिक)" class="ed-input w-full px-3 py-2 rounded-xl" />
+        <textarea id="admBatchDesc" rows="2" placeholder="बैच का संक्षिप्त विवरण..." class="ed-input w-full px-3 py-2 rounded-xl">${escapeHtml(editB?.description || "")}</textarea>
+        <textarea id="admBatchFeatures" rows="2" placeholder="विशेषताएं (हर लाइन में 1 पॉइंट)..." class="ed-input w-full px-3 py-2 rounded-xl">${escapeHtml(editB?.features || "Live & Recorded HD Classes\nProtected PDF Notes & eBooks\nChapter-wise DPP Homework\nOnline CBT Test Series")}</textarea>
+
+        <button type="button" onclick="adminSaveBatch()" class="w-full brand-gradient text-white font-extrabold py-3 rounded-xl text-xs shadow-lg">
+          <i class="fa-solid fa-floppy-disk mr-1"></i> ${editB ? "बैच अपडेट करें" : "नया बैच सेव और लाइव करें"}
+        </button>
+      </div>
+
+      <!-- Existing Batches List -->
+      <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+        <h3 class="text-sm font-extrabold">सभी ऑनलाइन बैचेस (${batches.length})</h3>
+        <div class="space-y-2.5 max-h-[460px] overflow-y-auto custom-scroll pr-1">
+          ${batches.length ? batches.map((b) => `
+            <div class="p-3 rounded-xl bg-slate-50 border flex items-center justify-between gap-2">
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${b.isFree ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}">${b.isFree ? "FREE" : formatCurrency(b.offerPrice)}</span>
+                  <span class="text-[10px] text-slate-500">${escapeHtml(b.category)}</span>
+                </div>
+                <div class="font-extrabold text-slate-900 truncate mt-0.5">${escapeHtml(b.title)}</div>
+              </div>
+              <div class="flex gap-1 shrink-0">
+                <button type="button" onclick="adminSelectBatchForContent('${escapeHtml(b.batchId)}')" class="bg-indigo-600 text-white font-bold px-2.5 py-1.5 rounded-lg text-[10px]">कंटेंट</button>
+                <button type="button" onclick="ADMIN_STATE.editingBatchId='${escapeHtml(b.batchId)}'; renderAdminWorkspace();" class="bg-amber-100 text-amber-900 font-bold px-2.5 py-1.5 rounded-lg text-[10px]">Edit</button>
+                <button type="button" onclick="adminDeleteBatch('${escapeHtml(b.batchId)}')" class="bg-rose-100 text-rose-700 font-bold px-2 py-1.5 rounded-lg text-[10px]"><i class="fa-solid fa-trash"></i></button>
+              </div>
+            </div>
+          `).join("") : `<p class="text-center text-slate-400 py-8">अभी कोई बैच नहीं बना है।</p>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch Content Uploader (Live/Recorded Videos, Notes, eBooks, DPP) -->
+    <div class="ed-card p-4 rounded-2xl space-y-4 text-xs">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-extrabold text-emerald-800"><i class="fa-solid fa-video mr-1.5"></i> बैच कंटेंट अपलोडर (Live/Recorded Video, Notes PDF, eBook, DPP)</h3>
+        <select onchange="adminSelectBatchForContent(this.value)" class="ed-input px-3 py-2 rounded-xl font-extrabold min-w-[220px]">
+          <option value="">-- बैच चुनें --</option>
+          ${batches.map((b) => `<option value="${escapeHtml(b.batchId)}" ${selBatchId === b.batchId ? "selected" : ""}>${escapeHtml(b.title)}</option>`).join("")}
+        </select>
+      </div>
+
+      ${selBatchId ? `
+        <div class="grid sm:grid-cols-3 gap-2.5 bg-slate-50 p-3.5 rounded-2xl border">
+          <select id="admContType" class="ed-input px-3 py-2 rounded-xl font-extrabold bg-white">
+            <option value="VIDEO">🎥 Recorded Class (YouTube Unlisted)</option>
+            <option value="LIVE">🔴 Live Class (YouTube Live Unlisted)</option>
+            <option value="NOTES">📄 Protected Notes PDF</option>
+            <option value="EBOOK">📚 Protected eBook PDF</option>
+            <option value="DPP">📝 DPP / Homework PDF</option>
+          </select>
+          <input type="text" id="admContSubject" placeholder="विषय (जैसे: Physics / Maths / GK) *" class="ed-input px-3 py-2 rounded-xl font-bold bg-white" />
+          <input type="text" id="admContChapter" placeholder="अध्याय (जैसे: Chapter 1 - Optics) *" class="ed-input px-3 py-2 rounded-xl font-bold bg-white" />
+          <input type="text" id="admContTitle" placeholder="लेक्चर / नोट्स का शीर्षक *" class="ed-input sm:col-span-3 px-3 py-2 rounded-xl font-bold bg-white" />
+          <input type="text" id="admContUrl" placeholder="YouTube Unlisted/Live लिंक या Google Drive/Direct PDF लिंक *" class="ed-input sm:col-span-2 px-3 py-2 rounded-xl bg-white" />
+          <input type="text" id="admContDppUrl" placeholder="अटैच्ड DPP PDF लिंक (वैकल्पिक)" class="ed-input px-3 py-2 rounded-xl bg-white" />
+          <button type="button" onclick="adminAddBatchContentItem()" class="sm:col-span-3 emerald-gradient text-white font-extrabold py-2.5 rounded-xl text-xs shadow">
+            <i class="fa-solid fa-cloud-arrow-up mr-1"></i> कंटेंट सुरक्षित अपलोड करें (Protected DB)
+          </button>
+        </div>
+
+        <div class="space-y-2 max-h-[380px] overflow-y-auto custom-scroll">
+          ${contentItems.length ? contentItems.map((it) => `
+            <div class="p-3 rounded-xl border bg-white flex flex-wrap items-center justify-between gap-2">
+              <div class="min-w-0 flex-1">
+                <span class="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-black text-[9px]">${escapeHtml(it.type)}</span>
+                <span class="text-[10px] font-bold text-slate-500 ml-1">${escapeHtml(it.subject)} → ${escapeHtml(it.chapter)}</span>
+                <div class="font-extrabold text-slate-900 mt-0.5">${escapeHtml(it.title)}</div>
+              </div>
+              <div class="flex gap-1.5">
+                ${(it.type === "LIVE" || it.type === "VIDEO")
+                  ? `<button type="button" onclick="openProtectedVideoPlayer({lectureId:'${escapeHtml(it.itemId)}',title:'${escapeHtml(it.title)}',videoUrl:'${escapeHtml(it.url)}'})" class="bg-slate-900 text-amber-300 font-bold px-2.5 py-1.5 rounded-lg text-[10px]">Preview</button>`
+                  : `<button type="button" onclick="openProtectedPdfViewer('${escapeHtml(it.url)}','${escapeHtml(it.title)}')" class="bg-slate-900 text-amber-300 font-bold px-2.5 py-1.5 rounded-lg text-[10px]">Preview</button>`
+                }
+                <button type="button" onclick="adminDeleteBatchContentItem('${escapeHtml(it.itemId)}')" class="bg-rose-100 text-rose-700 font-bold px-2.5 py-1.5 rounded-lg text-[10px]"><i class="fa-solid fa-trash"></i></button>
+              </div>
+            </div>
+          `).join("") : `<p class="text-center text-slate-400 py-5">इस बैच में अभी कोई क्लास या PDF नहीं जोड़ी गई है।</p>`}
+        </div>
+      ` : `<p class="text-slate-400 font-bold">कंटेंट जोड़ने के लिए पहले ऊपर कोई बैच बनाएं या चुनें।</p>`}
+    </div>
+  `;
+}
+
+async function adminSaveBatch() {
+  const title = document.getElementById("admBatchTitle").value.trim();
+  if (!title) return showAppAlert("कृपया बैच का नाम दर्ज करें।", "अधूरी जानकारी", "DANGER");
+
+  const isFree = document.getElementById("admBatchIsFree").value === "true";
+  let thumbnail = document.getElementById("admBatchThumbUrl").value.trim();
+  const fileEl = document.getElementById("admBatchThumbFile");
+  if (fileEl && fileEl.files && fileEl.files[0]) {
+    thumbnail = await compressImageToBase64(fileEl.files[0], 720, 0.75);
+  }
+
+  const batchId = ADMIN_STATE.editingBatchId || `BCH_${Date.now()}`;
+  const prev = ADMIN_STATE.batches[batchId] || {};
+  const batchObj = {
+    batchId,
+    title,
+    category: document.getElementById("admBatchCategory").value,
+    isFree,
+    mrp: isFree ? 0 : (Number(document.getElementById("admBatchMrp").value) || 0),
+    offerPrice: isFree ? 0 : (Number(document.getElementById("admBatchOffer").value) || 0),
+    validityDays: Number(document.getElementById("admBatchValidity").value) || 365,
+    medium: document.getElementById("admBatchMedium").value.trim() || "Hindi Medium",
+    thumbnail,
+    demoVideoUrl: document.getElementById("admBatchDemoUrl").value.trim(),
+    description: document.getElementById("admBatchDesc").value.trim(),
+    features: document.getElementById("admBatchFeatures").value.trim(),
+    status: "ACTIVE",
+    createdAt: prev.createdAt || Date.now(),
+    updatedAt: Date.now()
+  };
+
+  await db.ref(`batches/${batchId}`).set(batchObj);
+  ADMIN_STATE.editingBatchId = null;
+  ADMIN_STATE.selectedBatchForContent = batchId;
+  showToast("बैच सफलतापूर्वक सेव हो गया!", "SUCCESS");
+  renderAdminWorkspace();
+}
+
+async function adminDeleteBatch(batchId) {
+  const ok = await showAppConfirm("क्या आप इस बैच और इसके अंदर के सभी वीडियो/नोट्स को स्थायी रूप से हटाना चाहते हैं?", "बैच हटाएं");
+  if (!ok) return;
+  await db.ref(`batches/${batchId}`).remove();
+  await db.ref(`paidContent/${batchId}`).remove();
+  if (ADMIN_STATE.selectedBatchForContent === batchId) ADMIN_STATE.selectedBatchForContent = "";
+  showToast("बैच हटा दिया गया।", "INFO");
+}
+
+function adminSelectBatchForContent(batchId) {
+  ADMIN_STATE.selectedBatchForContent = batchId;
+  loadAdminBatchContentItems(batchId);
+}
+
+async function loadAdminBatchContentItems(batchId) {
+  if (!batchId) {
+    ADMIN_STATE.selectedBatchContentItems = {};
+    return renderAdminWorkspace();
+  }
+  const snap = await db.ref(`paidContent/${batchId}/items`).once("value");
+  ADMIN_STATE.selectedBatchContentItems = snap.val() || {};
+  if (ADMIN_STATE.activeTab === "batches") renderAdminWorkspace();
+}
+
+async function adminAddBatchContentItem() {
+  const bId = ADMIN_STATE.selectedBatchForContent;
+  if (!bId) return;
+
+  const type = document.getElementById("admContType").value;
+  const subject = document.getElementById("admContSubject").value.trim() || "General";
+  const chapter = document.getElementById("admContChapter").value.trim() || "Chapter 1";
+  const title = document.getElementById("admContTitle").value.trim();
+  const url = document.getElementById("admContUrl").value.trim();
+  const dppPdfUrl = document.getElementById("admContDppUrl").value.trim();
+
+  if (!title || !url) {
+    return showAppAlert("कृपया शीर्षक (Title) और वीडियो/PDF लिंक दोनों दर्ज करें।", "अधूरी जानकारी", "DANGER");
+  }
+
+  const itemId = `CNT_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  const obj = { itemId, type, subject, chapter, title, url, dppPdfUrl, createdAt: Date.now() };
+  await db.ref(`paidContent/${bId}/items/${itemId}`).set(obj);
+  ADMIN_STATE.selectedBatchContentItems[itemId] = obj;
+  showToast("कंटेंट बैच में जुड़ गया!", "SUCCESS");
+  renderAdminWorkspace();
+}
+
+async function adminDeleteBatchContentItem(itemId) {
+  const bId = ADMIN_STATE.selectedBatchForContent;
+  if (!bId) return;
+  await db.ref(`paidContent/${bId}/items/${itemId}`).remove();
+  delete ADMIN_STATE.selectedBatchContentItems[itemId];
+  showToast("कंटेंट हटा दिया गया।", "INFO");
+  renderAdminWorkspace();
+}
+
+// =========================================================
+// TAB 3: CBT TEST SERIES BUILDER (SEPARATE ANSWER KEY LOCK)
+// =========================================================
+function renderAdminTestsTab(container) {
+  const tests = Object.values(ADMIN_STATE.tests || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const batches = Object.values(ADMIN_STATE.batches || {});
+
+  container.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4 text-xs">
+      <!-- New CBT Test Builder -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <h3 class="text-sm font-extrabold text-pink-700"><i class="fa-solid fa-laptop-code mr-1.5"></i> नया ऑनलाइन CBT टेस्ट बनाएं</h3>
+        <div class="grid sm:grid-cols-2 gap-2">
+          <input type="text" id="admTestTitle" placeholder="टेस्ट का नाम (जैसे: Rajasthan CET Mock Test 01) *" class="ed-input sm:col-span-2 px-3 py-2 rounded-xl font-bold" />
+          <select id="admTestBatch" class="ed-input px-3 py-2 rounded-xl font-bold">
+            <option value="">FREE Test (सभी छात्रों के लिए)</option>
+            ${batches.map((b) => `<option value="${escapeHtml(b.batchId)}">Batch: ${escapeHtml(b.title)}</option>`).join("")}
+          </select>
+          <select id="admTestCategory" class="ed-input px-3 py-2 rounded-xl font-bold">
+            ${APP_CONFIG.categories.filter((c) => c !== "All").map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+          </select>
+          <input type="number" id="admTestDuration" value="30" placeholder="समय (मिनट)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <div class="grid grid-cols-2 gap-1.5">
+            <input type="number" id="admTestPlus" value="4" step="0.5" placeholder="+अंक" class="ed-input px-2.5 py-2 rounded-xl font-bold" />
+            <input type="number" id="admTestMinus" value="1" step="0.25" placeholder="-अंक" class="ed-input px-2.5 py-2 rounded-xl font-bold" />
+          </div>
+        </div>
+
+        <!-- Add Question Box -->
+        <div class="bg-slate-50 p-3 rounded-2xl border space-y-2">
+          <div class="font-extrabold text-slate-800">प्रश्न जोड़ें (अभी जुड़े प्रश्न: <span class="text-indigo-700">${ADMIN_STATE.draftTestQuestions.length}</span>)</div>
+          <textarea id="admQText" rows="2" placeholder="प्रश्न लिखें..." class="ed-input w-full px-3 py-2 rounded-xl bg-white font-bold"></textarea>
+          <div class="grid grid-cols-2 gap-2">
+            <input type="text" id="admQA" placeholder="Option A" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+            <input type="text" id="admQB" placeholder="Option B" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+            <input type="text" id="admQC" placeholder="Option C" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+            <input type="text" id="admQD" placeholder="Option D" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <select id="admQCorrect" class="ed-input px-2.5 py-1.5 rounded-lg bg-white font-extrabold">
+              <option value="A">सही: A</option>
+              <option value="B">सही: B</option>
+              <option value="C">सही: C</option>
+              <option value="D">सही: D</option>
+            </select>
+            <input type="text" id="admQExp" placeholder="सॉल्यूशन / व्याख्या (वैकल्पिक)" class="ed-input col-span-2 px-2.5 py-1.5 rounded-lg bg-white" />
+          </div>
+          <button type="button" onclick="adminPushDraftQuestion()" class="w-full bg-slate-900 text-amber-300 font-extrabold py-2 rounded-xl">+ लिस्ट में प्रश्न जोड़ें</button>
+        </div>
+
+        ${ADMIN_STATE.draftTestQuestions.length ? `
+          <div class="max-h-36 overflow-y-auto custom-scroll space-y-1.5">
+            ${ADMIN_STATE.draftTestQuestions.map((dq, i) => `
+              <div class="p-2 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-between gap-2">
+                <span class="truncate font-bold">Q${i + 1}. ${escapeHtml(dq.q)} <strong class="text-emerald-700">[${dq.correct}]</strong></span>
+                <button type="button" onclick="ADMIN_STATE.draftTestQuestions.splice(${i},1); renderAdminWorkspace();" class="text-rose-600 font-black">✕</button>
+              </div>
+            `).join("")}
+          </div>
+        ` : ""}
+
+        <button type="button" onclick="adminPublishCBTTest()" class="w-full emerald-gradient text-white font-extrabold py-3 rounded-xl shadow-lg">
+          <i class="fa-solid fa-paper-plane mr-1"></i> CBT टेस्ट पब्लिश करें (सुरक्षित Answer Key के साथ)
+        </button>
+      </div>
+
+      <!-- Published Tests List -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <h3 class="text-sm font-extrabold">लाइव CBT टेस्ट सीरीज (${tests.length})</h3>
+        <div class="space-y-2.5 max-h-[520px] overflow-y-auto custom-scroll">
+          ${tests.length ? tests.map((t) => {
+            const attCnt = Object.keys((ADMIN_STATE.testAttempts && ADMIN_STATE.testAttempts[t.testId]) || {}).length;
+            return `
+              <div class="p-3 rounded-xl bg-slate-50 border space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${t.isFree ? "bg-emerald-100 text-emerald-800" : "bg-pink-100 text-pink-800"}">${t.isFree ? "FREE" : "BATCH ONLY"}</span>
+                  <span class="text-[10px] font-bold text-indigo-700">${attCnt} छात्रों ने दिया</span>
+                </div>
+                <div class="font-extrabold text-sm text-slate-900">${escapeHtml(t.title)}</div>
+                <div class="text-[11px] text-slate-500">${(t.questions || []).length} सवाल • ${t.duration} Min • +${t.plusMark}/-${t.minusMark}</div>
+                <div class="flex gap-1.5 pt-1">
+                  <button type="button" onclick="adminViewTestLeaderboard('${escapeHtml(t.testId)}')" class="bg-indigo-600 text-white font-bold px-3 py-1.5 rounded-lg text-[10px]">रैंक लिस्ट देखें</button>
+                  <button type="button" onclick="adminDeleteCBTTest('${escapeHtml(t.testId)}')" class="bg-rose-100 text-rose-700 font-bold px-3 py-1.5 rounded-lg text-[10px]">हटाएं</button>
+                </div>
+              </div>
+            `;
+          }).join("") : `<p class="text-center text-slate-400 py-8">अभी कोई टेस्ट पब्लिश नहीं हुआ है।</p>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function adminPushDraftQuestion() {
+  const q = document.getElementById("admQText").value.trim();
+  const A = document.getElementById("admQA").value.trim();
+  const B = document.getElementById("admQB").value.trim();
+  const C = document.getElementById("admQC").value.trim();
+  const D = document.getElementById("admQD").value.trim();
+  const correct = document.getElementById("admQCorrect").value;
+  const explanation = document.getElementById("admQExp").value.trim();
+
+  if (!q || !A || !B || !C || !D) {
+    return showAppAlert("कृपया प्रश्न और चारों विकल्प (A, B, C, D) भरें।", "अधूरा प्रश्न", "DANGER");
+  }
+  ADMIN_STATE.draftTestQuestions.push({ q, A, B, C, D, correct, explanation });
+  showToast(`प्रश्न #${ADMIN_STATE.draftTestQuestions.length} जोड़ा गया!`, "SUCCESS");
+  renderAdminWorkspace();
+}
+
+async function adminPublishCBTTest() {
+  const title = document.getElementById("admTestTitle").value.trim();
+  if (!title || !ADMIN_STATE.draftTestQuestions.length) {
+    return showAppAlert("कृपया टेस्ट का नाम लिखें और कम से कम 1 प्रश्न जोड़ें।", "अधूरा टेस्ट", "DANGER");
+  }
+
+  const batchId = document.getElementById("admTestBatch").value;
+  const testId = `TST_${Date.now()}`;
+  const publicQuestions = ADMIN_STATE.draftTestQuestions.map((item) => ({
+    q: item.q, A: item.A, B: item.B, C: item.C, D: item.D
+  }));
+  const secretAnswers = ADMIN_STATE.draftTestQuestions.map((item) => ({
+    correct: item.correct, explanation: item.explanation || ""
+  }));
+
+  await db.ref().update({
+    [`tests/${testId}`]: {
+      testId,
+      title,
+      batchId: batchId || "",
+      isFree: !batchId,
+      category: document.getElementById("admTestCategory").value,
+      duration: Number(document.getElementById("admTestDuration").value) || 30,
+      plusMark: Number(document.getElementById("admTestPlus").value) || 4,
+      minusMark: Number(document.getElementById("admTestMinus").value) || 0,
+      status: "ACTIVE",
+      questions: publicQuestions,
+      createdAt: Date.now()
+    },
+    [`testAnswers/${testId}`]: secretAnswers
+  });
+
+  ADMIN_STATE.draftTestQuestions = [];
+  showToast("ऑनलाइन CBT टेस्ट लाइव हो गया!", "SUCCESS");
+  renderAdminWorkspace();
+}
+
+async function adminViewTestLeaderboard(testId) {
+  const attObj = (ADMIN_STATE.testAttempts && ADMIN_STATE.testAttempts[testId]) || {};
+  const list = Object.values(attObj).filter((a) => a && a.graded).sort((a, b) => b.score - a.score);
+  if (!list.length) return showAppAlert("अभी तक किसी छात्र ने यह टेस्ट सबमिट नहीं किया है।", "रिजल्ट खाली है");
+
+  const lines = list.slice(0, 20).map((a, i) => `#${i + 1} ${a.studentName} — ${a.score}/${a.maxMarks} (${a.percentage}%) | सही:${a.rightCount} गलत:${a.wrongCount}`).join("\n");
+  await showAppAlert(lines, "Top 20 Student Rank List", "INFO");
+}
+
+async function adminDeleteCBTTest(testId) {
+  const ok = await showAppConfirm("क्या आप इस टेस्ट और उसके सभी रिज़ल्ट्स को हटाना चाहते हैं?", "टेस्ट हटाएं");
+  if (!ok) return;
+  await db.ref().update({
+    [`tests/${testId}`]: null,
+    [`testAnswers/${testId}`]: null,
+    [`testAttempts/${testId}`]: null
+  });
+  showToast("टेस्ट हटा दिया गया।", "INFO");
+}
+
+// =========================================================
+// TAB 4: BOOK STORE MANAGER & DISPATCH / SHIPPING LABELS
+// =========================================================
+function renderAdminBooksTab(container) {
+  const books = Object.values(ADMIN_STATE.books || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const editBk = ADMIN_STATE.editingBookId ? ADMIN_STATE.books[ADMIN_STATE.editingBookId] : null;
+  const bookOrders = getAllOrdersFlat().filter((o) => o.orderType === "BOOK" && o.status === "APPROVED");
+
+  container.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4 text-xs">
+      <!-- Add / Edit Book -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <div class="flex justify-between items-center">
+          <h3 class="text-sm font-extrabold text-amber-700"><i class="fa-solid fa-book mr-1.5"></i> ${editBk ? "किताब एडिट करें" : "नई किताब जोड़ें (Online Only)"}</h3>
+          ${editBk ? `<button type="button" onclick="ADMIN_STATE.editingBookId=null; renderAdminWorkspace();" class="text-rose-600 font-bold">Cancel</button>` : ""}
+        </div>
+
+        <div class="grid sm:grid-cols-2 gap-2">
+          <input type="text" id="admBkTitle" value="${escapeHtml(editBk?.title || "")}" placeholder="किताब का नाम *" class="ed-input sm:col-span-2 px-3 py-2 rounded-xl font-bold" />
+          <input type="text" id="admBkAuthor" value="${escapeHtml(editBk?.author || "Gurukul Publications")}" placeholder="लेखक / प्रकाशक" class="ed-input px-3 py-2 rounded-xl" />
+          <input type="text" id="admBkCat" value="${escapeHtml(editBk?.category || "Competitive / Board")}" placeholder="कैटेगरी (जैसे: CET / 12th)" class="ed-input px-3 py-2 rounded-xl" />
+          <input type="number" id="admBkMrp" value="${editBk?.mrp ?? 350}" placeholder="MRP (₹)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <input type="number" id="admBkOffer" value="${editBk?.offerPrice ?? 249}" placeholder="Offer Price (₹)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <input type="number" id="admBkShip" value="${editBk?.shippingFee ?? 0}" placeholder="डिलीवरी चार्ज (₹, 0 = Free)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+          <input type="number" id="admBkStock" value="${editBk?.stock ?? 25}" placeholder="उपलब्ध स्टॉक" class="ed-input px-3 py-2 rounded-xl font-bold" />
+        </div>
+        <input type="text" id="admBkCoverUrl" value="${escapeHtml(editBk?.coverUrl || "")}" placeholder="कवर फोटो लिंक (या नीचे से अपलोड करें)" class="ed-input w-full px-3 py-2 rounded-xl" />
+        <input type="file" id="admBkCoverFile" accept="image/*" class="ed-input w-full px-3 py-1.5 rounded-xl" />
+        <input type="text" id="admBkSampleUrl" value="${escapeHtml(editBk?.samplePdfUrl || "")}" placeholder="सैंपल पेज PDF लिंक (वैकल्पिक)" class="ed-input w-full px-3 py-2 rounded-xl" />
+        <textarea id="admBkDesc" rows="2" placeholder="किताब का विवरण..." class="ed-input w-full px-3 py-2 rounded-xl">${escapeHtml(editBk?.description || "")}</textarea>
+
+        <button type="button" onclick="adminSaveBook()" class="w-full gold-gradient text-slate-950 font-extrabold py-3 rounded-xl shadow">
+          <i class="fa-solid fa-floppy-disk mr-1"></i> ${editBk ? "किताब अपडेट करें" : "किताब स्टोर में जोड़ें"}
+        </button>
+      </div>
+
+      <!-- Catalog List -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <h3 class="text-sm font-extrabold">स्टोर की किताबें (${books.length})</h3>
+        <div class="space-y-2 max-h-[430px] overflow-y-auto custom-scroll">
+          ${books.length ? books.map((b) => `
+            <div class="p-3 rounded-xl bg-slate-50 border flex items-center justify-between gap-2">
+              <div class="min-w-0">
+                <div class="font-extrabold text-slate-900 truncate">${escapeHtml(b.title)}</div>
+                <div class="text-[11px] text-slate-600">${formatCurrency(b.offerPrice)} (MRP ${formatCurrency(b.mrp)}) • स्टॉक: <strong class="${b.stock <= 3 ? "text-rose-600" : "text-emerald-700"}">${b.stock}</strong></div>
+              </div>
+              <div class="flex gap-1 shrink-0">
+                <button type="button" onclick="ADMIN_STATE.editingBookId='${escapeHtml(b.bookId)}'; renderAdminWorkspace();" class="bg-amber-100 text-amber-900 font-bold px-2.5 py-1.5 rounded-lg text-[10px]">Edit</button>
+                <button type="button" onclick="adminDeleteBook('${escapeHtml(b.bookId)}')" class="bg-rose-100 text-rose-700 font-bold px-2 py-1.5 rounded-lg text-[10px]"><i class="fa-solid fa-trash"></i></button>
+              </div>
+            </div>
+          `).join("") : `<p class="text-center text-slate-400 py-8">अभी कोई किताब नहीं जोड़ी गई है।</p>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- Approved Book Orders Dispatch & Shipping Label -->
+    <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+      <h3 class="text-sm font-extrabold text-indigo-800"><i class="fa-solid fa-truck-fast mr-1.5"></i> कन्फर्म बुक ऑर्डर डिस्पैच व शिपिंग लेबल (${bookOrders.length})</h3>
+      <div class="space-y-2.5">
+        ${bookOrders.length ? bookOrders.map((o) => `
+          <div class="p-3.5 rounded-2xl border bg-slate-50 space-y-2">
+            <div class="flex flex-wrap justify-between gap-2">
+              <div class="font-extrabold text-slate-900">${escapeHtml(o.orderId)} — ${escapeHtml(o.title)} (${formatCurrency(o.finalAmount)})</div>
+              <span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-black text-[10px]">${escapeHtml(o.shippingStatus || "PLACED")}</span>
+            </div>
+            ${o.shippingAddress ? `
+              <p class="text-[11px] text-slate-700 bg-white p-2.5 rounded-xl border">
+                <strong>पता:</strong> ${escapeHtml(o.shippingAddress.fullName)} (${escapeHtml(o.shippingAddress.phone)}) —
+                ${escapeHtml(o.shippingAddress.addressLine)}, ${escapeHtml(o.shippingAddress.city)}, ${escapeHtml(o.shippingAddress.state)} - <strong>${escapeHtml(o.shippingAddress.pincode)}</strong>
+              </p>
+            ` : ""}
+            <div class="flex flex-wrap items-center gap-2">
+              <select id="shipStat_${escapeHtml(o.orderId)}" class="ed-input px-2.5 py-1.5 rounded-xl font-bold bg-white">
+                ${["PLACED", "PACKED", "SHIPPED", "DELIVERED"].map((st) => `<option value="${st}" ${(o.shippingStatus || "PLACED") === st ? "selected" : ""}>${st}</option>`).join("")}
+              </select>
+              <input type="text" id="shipTrack_${escapeHtml(o.orderId)}" value="${escapeHtml(o.courierTracking || "")}" placeholder="कूरियर नाम व ट्रैकिंग नंबर..." class="ed-input flex-1 min-w-[180px] px-3 py-1.5 rounded-xl bg-white" />
+              <button type="button" onclick="adminUpdateBookShipping('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="bg-indigo-600 text-white font-extrabold px-3.5 py-1.5 rounded-xl">Update Tracking</button>
+              <button type="button" onclick="adminPrintShippingLabelPDF('${escapeHtml(o.uid)}','${escapeHtml(o.orderId)}')" class="bg-slate-900 text-amber-300 font-extrabold px-3.5 py-1.5 rounded-xl"><i class="fa-solid fa-print mr-1"></i>Shipping Label</button>
+            </div>
+          </div>
+        `).join("") : `<p class="text-center text-slate-400 py-5">कोई अप्रूव्ड बुक ऑर्डर पेंडिंग नहीं है।</p>`}
+      </div>
+    </div>
+  `;
+}
+
+async function adminSaveBook() {
+  const title = document.getElementById("admBkTitle").value.trim();
+  if (!title) return showAppAlert("कृपया किताब का नाम दर्ज करें।", "अधूरी जानकारी", "DANGER");
+
+  let coverUrl = document.getElementById("admBkCoverUrl").value.trim();
+  const fileEl = document.getElementById("admBkCoverFile");
+  if (fileEl && fileEl.files && fileEl.files[0]) {
+    coverUrl = await compressImageToBase64(fileEl.files[0], 600, 0.75);
+  }
+
+  const bookId = ADMIN_STATE.editingBookId || `BK_${Date.now()}`;
+  const prev = ADMIN_STATE.books[bookId] || {};
+  await db.ref(`books/${bookId}`).set({
+    bookId,
+    title,
+    author: document.getElementById("admBkAuthor").value.trim(),
+    category: document.getElementById("admBkCat").value.trim(),
+    mrp: Number(document.getElementById("admBkMrp").value) || 0,
+    offerPrice: Number(document.getElementById("admBkOffer").value) || 0,
+    shippingFee: Number(document.getElementById("admBkShip").value) || 0,
+    stock: Number(document.getElementById("admBkStock").value) || 0,
+    coverUrl,
+    samplePdfUrl: document.getElementById("admBkSampleUrl").value.trim(),
+    description: document.getElementById("admBkDesc").value.trim(),
+    status: "ACTIVE",
+    createdAt: prev.createdAt || Date.now(),
+    updatedAt: Date.now()
+  });
+
+  ADMIN_STATE.editingBookId = null;
+  showToast("किताब स्टोर में सेव हो गई!", "SUCCESS");
+  renderAdminWorkspace();
+}
+
+async function adminDeleteBook(bookId) {
+  const ok = await showAppConfirm("क्या आप इस किताब को स्टोर से हटाना चाहते हैं?", "किताब हटाएं");
+  if (!ok) return;
+  await db.ref(`books/${bookId}`).remove();
+  showToast("किताब हटा दी गई।", "INFO");
+}
+
+async function adminUpdateBookShipping(uid, orderId) {
+  const st = document.getElementById(`shipStat_${orderId}`)?.value || "PLACED";
+  const trk = (document.getElementById(`shipTrack_${orderId}`)?.value || "").trim();
+  const notifId = `NTF_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+
+  await db.ref().update({
+    [`orders/${uid}/${orderId}/shippingStatus`]: st,
+    [`orders/${uid}/${orderId}/courierTracking`]: trk,
+    [`orders/${uid}/${orderId}/updatedAt`]: Date.now(),
+    [`notifications/${notifId}`]: {
+      id: notifId,
+      targetType: "USER",
+      targetValue: uid,
+      title: `📦 बुक ऑर्डर अपडेट: ${st}`,
+      message: `आपका ऑर्डर ${orderId} अब '${st}' स्थिति में है। ${trk ? `ट्रैकिंग: ${trk}` : ""}`,
+      createdAt: Date.now()
+    }
+  });
+  showToast(`शिपिंग स्टेटस '${st}' अपडेट हो गया!`, "SUCCESS");
+}
+
+async function adminPrintShippingLabelPDF(uid, orderId) {
+  const o = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (!o || !o.shippingAddress) return;
+  const a = o.shippingAddress;
+  const wrap = document.getElementById("pdfPrintWrapper");
+  const area = document.getElementById("pdfPrintArea");
+  wrap.classList.remove("hidden");
+
+  area.innerHTML = `
+    <div style="border:3px dashed #0f172a;padding:24px;background:#fff;font-family:Arial,sans-serif;">
+      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #0f172a;padding-bottom:10px;">
+        <div>
+          <h2 style="margin:0;font-size:20px;color:#312e81;">PREPAID BOOK PARCEL (DO NOT COLLECT CASH)</h2>
+          <p style="margin:3px 0 0;font-size:12px;font-weight:bold;">Order ID: ${escapeHtml(o.orderId)} | Paid Online: ${formatCurrency(o.finalAmount)}</p>
+        </div>
+        <img src="${buildQrImageUrl(o.orderId + '|' + a.pincode, 85)}" crossorigin="anonymous" style="width:80px;height:80px;" />
+      </div>
+      <div style="margin:16px 0;padding:14px;background:#f8fafc;border:1.5px solid #0f172a;border-radius:8px;font-size:14px;line-height:1.6;">
+        <div style="font-size:11px;font-weight:bold;color:#475569;">DELIVER TO (प्राप्तकर्ता):</div>
+        <div style="font-size:18px;font-weight:900;">${escapeHtml(a.fullName)}</div>
+        <div><strong>Mobile:</strong> +91 ${escapeHtml(a.phone)}</div>
+        <div>${escapeHtml(a.addressLine)}</div>
+        <div>${escapeHtml(a.city)}, ${escapeHtml(a.state)} — <strong style="font-size:17px;">PIN: ${escapeHtml(a.pincode)}</strong></div>
+      </div>
+      <div style="font-size:12px;margin-bottom:14px;"><strong>Items:</strong> ${escapeHtml(o.title)}</div>
+      <div style="border-top:1.5px solid #cbd5e1;padding-top:10px;font-size:11.5px;color:#334155;">
+        <strong>FROM:</strong> ${APP_CONFIG.appName} — ${APP_CONFIG.schoolName}, ${APP_CONFIG.address} | Helpline: ${APP_CONFIG.helplines.join(", ")}
+      </div>
+    </div>
+  `;
+
+  try {
+    await html2pdf().set(getSafePdfOptions(`ShippingLabel_${o.orderId}.pdf`, 580)).from(area).save();
+  } finally {
+    wrap.classList.add("hidden");
+  }
+}
+
+// =========================================================
+// TAB 5: STUDENTS, MANUAL ACCESS GRANT, DEVICE RESET & BLOCK
+// =========================================================
+function renderAdminStudentsTab(container) {
+  const q = (ADMIN_STATE.studentSearch || "").toLowerCase();
+  const students = Object.values(ADMIN_STATE.users || {})
+    .filter((u) => {
+      if (!u || !u.uid) return false;
+      if (!q) return true;
+      return `${u.name || ""} ${u.email || ""} ${u.phone || ""} ${u.studentCode || ""}`.toLowerCase().includes(q);
+    })
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const batches = Object.values(ADMIN_STATE.batches || {});
+
+  container.innerHTML = `
+    <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-extrabold"><i class="fa-solid fa-users text-blue-600 mr-1.5"></i> छात्र मैनेजमेंट, डिवाइस रीसेट व मैनुअल बैच एक्सेस (${students.length})</h3>
+        <input type="text" value="${escapeHtml(ADMIN_STATE.studentSearch)}" oninput="ADMIN_STATE.studentSearch=this.value; renderAdminWorkspace();" placeholder="नाम, फोन, ईमेल या ID खोजें..." class="ed-input px-3.5 py-2 rounded-xl min-w-[230px]" />
+      </div>
+
+      <div class="space-y-2.5 max-h-[560px] overflow-y-auto custom-scroll">
+        ${students.length ? students.map((u) => {
+          const userEnr = Object.values((ADMIN_STATE.enrollments && ADMIN_STATE.enrollments[u.uid]) || {}).filter((e) => e && e.active);
+          return `
+            <div class="p-3.5 rounded-2xl border ${u.blocked ? "border-rose-400 bg-rose-50/50" : "border-slate-200 bg-slate-50"} space-y-2">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span class="font-mono font-black text-indigo-700">${escapeHtml(u.studentCode || u.uid.slice(0, 8))}</span>
+                  <strong class="text-sm text-slate-900 ml-1.5">${escapeHtml(u.name || "Student")}</strong>
+                  ${u.blocked ? `<span class="ml-1.5 bg-rose-600 text-white px-2 py-0.5 rounded-full text-[9px] font-black">BLOCKED</span>` : ""}
+                  <div class="text-[11px] text-slate-600">${escapeHtml(u.phone || "-")} • ${escapeHtml(u.email || "-")} • Target: ${escapeHtml(u.target || "-")}</div>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                  <button type="button" onclick="adminResetStudentDevice('${escapeHtml(u.uid)}')" class="bg-indigo-100 text-indigo-800 font-bold px-2.5 py-1.5 rounded-lg text-[10px]"><i class="fa-solid fa-mobile-screen mr-1"></i>डिवाइस रीसेट</button>
+                  <button type="button" onclick="adminToggleBlockStudent('${escapeHtml(u.uid)}', ${!u.blocked})" class="${u.blocked ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"} font-bold px-2.5 py-1.5 rounded-lg text-[10px]">${u.blocked ? "Unblock" : "Block/Suspend"}</button>
+                </div>
+              </div>
+
+              <!-- Active Enrollments & Manual Grant -->
+              <div class="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-200">
+                ${userEnr.map((e) => `
+                  <span class="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 px-2.5 py-1 rounded-lg text-[10px] font-extrabold">
+                    ${escapeHtml(e.batchTitle || e.batchId)}
+                    <button type="button" onclick="adminRevokeStudentBatch('${escapeHtml(u.uid)}','${escapeHtml(e.batchId)}')" class="text-rose-600 ml-1" title="एक्सेस हटाएं">✕</button>
+                  </span>
+                `).join("")}
+
+                <select id="grantSel_${escapeHtml(u.uid)}" class="ed-input px-2 py-1 rounded-lg text-[10px] font-bold bg-white ml-auto">
+                  <option value="">+ मैनुअल बैच दें (ऑफलाइन छात्रों हेतु)</option>
+                  ${batches.map((b) => `<option value="${escapeHtml(b.batchId)}">${escapeHtml(b.title)}</option>`).join("")}
+                </select>
+                <button type="button" onclick="adminGrantBatchManually('${escapeHtml(u.uid)}')" class="bg-slate-900 text-amber-300 font-extrabold px-2.5 py-1 rounded-lg text-[10px]">Grant Access</button>
+              </div>
+            </div>
+          `;
+        }).join("") : `<p class="text-center text-slate-400 py-8">कोई छात्र नहीं मिला।</p>`}
+      </div>
+    </div>
+  `;
+}
+
+async function adminResetStudentDevice(uid) {
+  const ok = await showAppConfirm("क्या आप इस छात्र का Single-Device Lock रीसेट करना चाहते हैं ताकि वह नए मोबाइल में लॉगिन कर सके?", "डिवाइस रीसेट");
+  if (!ok) return;
+  await db.ref(`users/${uid}`).update({ boundDeviceId: null, deviceResetCount: 0 });
+  showToast("छात्र का डिवाइस लॉक रीसेट हो गया!", "SUCCESS");
+}
+
+async function adminToggleBlockStudent(uid, shouldBlock) {
+  const ok = await showAppConfirm(shouldBlock ? "क्या आप इस छात्र को ब्लॉक/सस्पेंड करना चाहते हैं?" : "क्या आप इस छात्र को अनब्लॉक करना चाहते हैं?", "अकाउंट सुरक्षा");
+  if (!ok) return;
+  await db.ref(`users/${uid}/blocked`).set(Boolean(shouldBlock));
+  showToast(shouldBlock ? "छात्र को ब्लॉक कर दिया गया।" : "छात्र अनब्लॉक हो गया।", shouldBlock ? "WARNING" : "SUCCESS");
+}
+
+async function adminGrantBatchManually(uid) {
+  const bId = document.getElementById(`grantSel_${uid}`)?.value;
+  if (!bId || !ADMIN_STATE.batches[bId]) return showToast("कृपया पहले कोई बैच चुनें।", "WARNING");
+
+  const daysStr = await showAppPrompt("कितने दिनों की वैधता देनी है?", String(ADMIN_STATE.batches[bId].validityDays || 365), "मैनुअल बैच एक्सेस");
+  if (!daysStr) return;
+  const days = Math.max(1, Number(daysStr) || 365);
+
+  await db.ref(`enrollments/${uid}/${bId}`).set({
+    batchId: bId,
+    batchTitle: ADMIN_STATE.batches[bId].title,
+    active: true,
+    isFreeEnroll: false,
+    grantedByAdmin: true,
+    enrolledAt: Date.now(),
+    expiresAt: Date.now() + days * 86400000
+  });
+  showToast(`'${ADMIN_STATE.batches[bId].title}' का एक्सेस दे दिया गया!`, "SUCCESS");
+}
+
+async function adminRevokeStudentBatch(uid, batchId) {
+  const ok = await showAppConfirm("क्या आप इस छात्र से इस बैच का एक्सेस हटाना चाहते हैं?", "एक्सेस हटाएं");
+  if (!ok) return;
+  await db.ref(`enrollments/${uid}/${batchId}`).remove();
+  showToast("बैच एक्सेस हटा दिया गया।", "INFO");
+}
+
+// =========================================================
+// TAB 6: TEACHER DOUBT REPLY DESK (TEXT + PHOTO SOLUTION)
+// =========================================================
+function renderAdminDoubtsTab(container) {
+  const all = getAllDoubtsFlat();
+  const filtered = ADMIN_STATE.doubtFilter === "ALL" ? all : all.filter((d) => d.status === ADMIN_STATE.doubtFilter);
+
+  container.innerHTML = `
+    <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-extrabold text-violet-700"><i class="fa-solid fa-comments mr-1.5"></i> स्टूडेंट डाउट डेस्क (${all.length})</h3>
+        <div class="flex gap-1.5 font-extrabold">
+          ${[["PENDING", "⏳ Pending"], ["SOLVED", "✅ Solved"], ["ALL", "All"]].map(([k, l]) => `
+            <button type="button" onclick="ADMIN_STATE.doubtFilter='${k}'; renderAdminWorkspace();" class="px-3 py-1.5 rounded-xl ${ADMIN_STATE.doubtFilter === k ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-700"}">${l}</button>
+          `).join("")}
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        ${filtered.length ? filtered.map((d) => `
+          <div class="p-4 rounded-2xl border bg-slate-50 space-y-2.5">
+            <div class="flex flex-wrap justify-between gap-2">
+              <div>
+                <span class="bg-violet-100 text-violet-800 px-2 py-0.5 rounded font-black text-[10px]">${escapeHtml(d.subject)}</span>
+                <strong class="ml-1.5 text-slate-900">${escapeHtml(d.studentName)}</strong> (${escapeHtml(d.studentPhone || "-")})
+              </div>
+              <span class="text-[10px] text-slate-500">${formatDateTime(d.createdAt)}</span>
+            </div>
+            <p class="font-bold text-slate-800 whitespace-pre-line bg-white p-2.5 rounded-xl border">${escapeHtml(d.question)}</p>
+            ${d.photoBase64 ? `<img src="${d.photoBase64}" onclick="previewDoubtFullImage(this.src)" class="max-h-40 rounded-xl border cursor-pointer" />` : ""}
+
+            <div class="space-y-2 pt-2 border-t">
+              <textarea id="dbtRepTxt_${escapeHtml(d.doubtId)}" rows="2" placeholder="टीचर का उत्तर / सॉल्यूशन लिखें..." class="ed-input w-full px-3 py-2 rounded-xl bg-white">${escapeHtml(d.replyText || "")}</textarea>
+              <div class="flex flex-wrap items-center gap-2">
+                <input type="file" id="dbtRepImg_${escapeHtml(d.doubtId)}" accept="image/*" class="ed-input flex-1 px-2.5 py-1.5 rounded-xl bg-white" />
+                <button type="button" onclick="adminReplyStudentDoubt('${escapeHtml(d.uid)}','${escapeHtml(d.doubtId)}')" class="emerald-gradient text-white font-extrabold px-4 py-2 rounded-xl shadow">जवाब भेजें (Mark Solved)</button>
+              </div>
+            </div>
+          </div>
+        `).join("") : `<p class="text-center text-slate-400 py-8">कोई डाउट पेंडिंग नहीं है।</p>`}
+      </div>
+    </div>
+  `;
+}
+
+async function adminReplyStudentDoubt(uid, doubtId) {
+  const replyText = (document.getElementById(`dbtRepTxt_${doubtId}`)?.value || "").trim();
+  const fileEl = document.getElementById(`dbtRepImg_${doubtId}`);
+  let replyPhotoBase64 = "";
+  if (fileEl && fileEl.files && fileEl.files[0]) {
+    replyPhotoBase64 = await compressImageToBase64(fileEl.files[0], 720, 0.72);
+  }
+  if (!replyText && !replyPhotoBase64) {
+    return showAppAlert("कृपया उत्तर लिखें या सॉल्यूशन की फोटो अपलोड करें।", "अधूरा जवाब", "DANGER");
+  }
+
+  const notifId = `NTF_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  const updates = {
+    [`doubts/${uid}/${doubtId}/status`]: "SOLVED",
+    [`doubts/${uid}/${doubtId}/replyText`]: replyText,
+    [`doubts/${uid}/${doubtId}/repliedAt`]: Date.now(),
+    [`notifications/${notifId}`]: {
+      id: notifId,
+      targetType: "USER",
+      targetValue: uid,
+      title: "✅ आपके डाउट का जवाब आ गया है!",
+      message: replyText ? replyText.slice(0, 120) : "टीचर ने आपके सवाल का फोटो सॉल्यूशन भेजा है। My Study → डाउट डेस्क देखें।",
+      createdAt: Date.now()
+    }
+  };
+  if (replyPhotoBase64) updates[`doubts/${uid}/${doubtId}/replyPhotoBase64`] = replyPhotoBase64;
+
+  await db.ref().update(updates);
+  showToast("डाउट का जवाब भेज दिया गया!", "SUCCESS");
+}
+
+// =========================================================
+// TAB 7: COUPONS, HOME BANNERS & BACKGROUND PUSH BROADCAST
+// =========================================================
+function renderAdminMarketingTab(container) {
+  const coupons = Object.values(ADMIN_STATE.coupons || {});
+  const banners = (APP_STATE.publicSettings && APP_STATE.publicSettings.banners) || [];
+  const batches = Object.values(ADMIN_STATE.batches || {});
+  const tokenCnt = Object.keys(ADMIN_STATE.fcmTokens || {}).length;
+
+  container.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4 text-xs">
+      <!-- Broadcast Notification & Closed-App Push -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-extrabold text-rose-700"><i class="fa-solid fa-bullhorn mr-1.5"></i> नोटिफिकेशन व बैकग्राउंड Push भेजें</h3>
+          <span class="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full text-[10px] font-black">${tokenCnt} Push Devices</span>
+        </div>
+        <select id="admNotifTargetType" onchange="document.getElementById('admNotifTargetValWrap').classList.toggle('hidden', this.value==='ALL')" class="ed-input w-full px-3 py-2 rounded-xl font-bold">
+          <option value="ALL">सभी छात्रों को (All Students)</option>
+          <option value="CATEGORY">किसी विशेष कैटेगरी को</option>
+          <option value="BATCH">किसी विशेष बैच के छात्रों को</option>
+        </select>
+        <div id="admNotifTargetValWrap" class="hidden">
+          <input type="text" id="admNotifTargetVal" placeholder="कैटेगरी नाम या Batch ID दर्ज करें" class="ed-input w-full px-3 py-2 rounded-xl" />
+        </div>
+        <input type="text" id="admNotifTitle" placeholder="नोटिस / अलर्ट का शीर्षक *" class="ed-input w-full px-3 py-2 rounded-xl font-bold" />
+        <textarea id="admNotifMsg" rows="3" placeholder="पूरा संदेश लिखें..." class="ed-input w-full px-3 py-2 rounded-xl"></textarea>
+        <button type="button" onclick="adminSendBroadcastPush()" class="w-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold py-3 rounded-xl shadow">
+          <i class="fa-solid fa-bell mr-1"></i> तुरंत नोटिफिकेशन भेजें
+        </button>
+      </div>
+
+      <!-- Coupon Code Manager -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <h3 class="text-sm font-extrabold text-indigo-700"><i class="fa-solid fa-tag mr-1.5"></i> डिस्काउंट कूपन कोड मैनेजर</h3>
+        <div class="grid grid-cols-3 gap-2">
+          <input type="text" id="admCpnCode" placeholder="CODE (जैसे: NEW20)" class="ed-input px-3 py-2 rounded-xl font-extrabold uppercase" />
+          <select id="admCpnType" class="ed-input px-2 py-2 rounded-xl font-bold">
+            <option value="PERCENT">% छूट</option>
+            <option value="FLAT">₹ Flat छूट</option>
+          </select>
+          <input type="number" id="admCpnVal" placeholder="मान (जैसे: 20)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+        </div>
+        <button type="button" onclick="adminSaveCouponCode()" class="w-full brand-gradient text-white font-extrabold py-2.5 rounded-xl">कूपन बनाएं / एक्टिव करें</button>
+        <div class="space-y-1.5 max-h-44 overflow-y-auto custom-scroll">
+          ${coupons.map((c) => `
+            <div class="p-2.5 rounded-xl bg-slate-50 border flex items-center justify-between">
+              <div><strong class="text-indigo-700">${escapeHtml(c.code)}</strong> — ${c.discountType === "FLAT" ? formatCurrency(c.discountValue) : c.discountValue + "%"} OFF</div>
+              <button type="button" onclick="db.ref('coupons/${escapeHtml(c.code)}').remove()" class="text-rose-600 font-bold">Delete</button>
+            </div>
+          `).join("") || `<p class="text-slate-400 text-center py-4">कोई कूपन नहीं है।</p>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- Home Announcement & Promo Banners -->
+    <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+      <h3 class="text-sm font-extrabold"><i class="fa-solid fa-images text-amber-600 mr-1.5"></i> होम अनाउंसमेंट और ऑफर बैनर</h3>
+      <div class="flex gap-2">
+        <input type="text" id="admAnnounceInput" value="${escapeHtml(APP_STATE.publicSettings.announcement || "")}" class="ed-input flex-1 px-3 py-2 rounded-xl font-bold" />
+        <button type="button" onclick="db.ref('publicSettings/announcement').set(document.getElementById('admAnnounceInput').value.trim()).then(()=>showToast('अनाउंसमेंट अपडेट हो गया!','SUCCESS'))" class="bg-slate-900 text-amber-300 font-extrabold px-4 py-2 rounded-xl">Save Ticker</button>
+      </div>
+      <div class="grid sm:grid-cols-3 gap-2 pt-2 border-t">
+        <input type="text" id="admBanTitle" placeholder="बैनर शीर्षक" class="ed-input px-3 py-2 rounded-xl font-bold" />
+        <input type="text" id="admBanImg" placeholder="बैनर इमेज लिंक (वैकल्पिक)" class="ed-input px-3 py-2 rounded-xl" />
+        <select id="admBanBatch" class="ed-input px-3 py-2 rounded-xl font-bold">
+          <option value="">लिंक्ड बैच (वैकल्पिक)</option>
+          ${batches.map((b) => `<option value="${escapeHtml(b.batchId)}">${escapeHtml(b.title)}</option>`).join("")}
+        </select>
+        <button type="button" onclick="adminAddHomeBanner()" class="sm:col-span-3 emerald-gradient text-white font-extrabold py-2 rounded-xl">+ नया होम बैनर जोड़ें</button>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-2">
+        ${banners.map((b, i) => `
+          <div class="p-2.5 rounded-xl bg-slate-50 border flex items-center justify-between gap-2">
+            <span class="font-bold truncate">${escapeHtml(b.title || "Banner " + (i + 1))}</span>
+            <button type="button" onclick="adminDeleteHomeBanner(${i})" class="text-rose-600 font-bold">हटाएं</button>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function adminSendBroadcastPush() {
+  const title = document.getElementById("admNotifTitle").value.trim();
+  const message = document.getElementById("admNotifMsg").value.trim();
+  const targetType = document.getElementById("admNotifTargetType").value;
+  const targetValue = (document.getElementById("admNotifTargetVal")?.value || "").trim();
+  if (!title || !message) return showAppAlert("कृपया शीर्षक और संदेश दोनों लिखें।", "अधूरी जानकारी", "DANGER");
+
+  const notifId = `NTF_${Date.now()}`;
+  await db.ref(`notifications/${notifId}`).set({
+    id: notifId, title, message, targetType, targetValue, createdAt: Date.now()
+  });
+
+  // Trigger optional Background FCM Push Server if configured in Settings
+  const pushUrl = APP_STATE.publicSettings && APP_STATE.publicSettings.fcmPushServerUrl;
+  const tokens = Object.values(ADMIN_STATE.fcmTokens || {}).map((t) => t.token).filter(Boolean);
+  if (pushUrl && tokens.length > 0) {
+    fetch(pushUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ title, body: message, tokens })
+    }).catch(() => {});
+  }
+
+  document.getElementById("admNotifTitle").value = "";
+  document.getElementById("admNotifMsg").value = "";
+  showToast("नोटिफिकेशन सभी छात्रों को भेज दिया गया!", "SUCCESS");
+}
+
+async function adminSaveCouponCode() {
+  const code = document.getElementById("admCpnCode").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const discountType = document.getElementById("admCpnType").value;
+  const discountValue = Number(document.getElementById("admCpnVal").value) || 0;
+  if (!code || discountValue <= 0) return showAppAlert("सही कूपन कोड और छूट का मान दर्ज करें।", "अमान्य कूपन", "DANGER");
+
+  await db.ref(`coupons/${code}`).set({ code, discountType, discountValue, active: true, createdAt: Date.now() });
+  showToast(`कूपन ${code} एक्टिव हो गया!`, "SUCCESS");
+}
+
+async function adminAddHomeBanner() {
+  const title = document.getElementById("admBanTitle").value.trim();
+  const imageUrl = document.getElementById("admBanImg").value.trim();
+  const batchId = document.getElementById("admBanBatch").value;
+  if (!title && !imageUrl) return showToast("शीर्षक या इमेज लिंक डालें।", "WARNING");
+
+  const next = [...((APP_STATE.publicSettings && APP_STATE.publicSettings.banners) || []), { title, imageUrl, batchId, badge: "FEATURED" }];
+  await db.ref("publicSettings/banners").set(next);
+  showToast("होम बैनर जोड़ा गया!", "SUCCESS");
+}
+
+async function adminDeleteHomeBanner(idx) {
+  const next = [...((APP_STATE.publicSettings && APP_STATE.publicSettings.banners) || [])];
+  next.splice(idx, 1);
+  await db.ref("publicSettings/banners").set(next);
+  showToast("बैनर हटा दिया गया।", "INFO");
+}
+
+// =========================================================
+// TAB 8: LIVE UPI PAYMENT CONFIG, APP-ONLY LOCK & AUDIT LOGS
+// =========================================================
+function renderAdminSettingsTab(container) {
+  const pay = getLivePaymentConfig();
+  const ps = APP_STATE.publicSettings || {};
+  const logs = Object.values(ADMIN_STATE.securityLogs || {}).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  container.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4 text-xs">
+      <!-- Live Dynamic UPI Payment Settings -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <h3 class="text-sm font-extrabold text-emerald-700"><i class="fa-solid fa-qrcode mr-1.5"></i> लाइव UPI पेमेंट सेटिंग (तुरंत बदलें)</h3>
+        <p class="text-[11px] text-slate-500">यहाँ से UPI ID या अकाउंट होल्डर का नाम बदलते ही सभी छात्रों के पेमेंट पेज और QR कोड तुरंत अपडेट हो जाएंगे।</p>
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">ऑफिशियल UPI ID *</label>
+          <input type="text" id="admSetUpiId" value="${escapeHtml(pay.upiId)}" class="ed-input w-full px-3 py-2.5 rounded-xl font-mono font-extrabold" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">अकाउंट होल्डर का नाम (Bank Name) *</label>
+          <input type="text" id="admSetHolder" value="${escapeHtml(pay.accountHolder)}" class="ed-input w-full px-3 py-2.5 rounded-xl font-bold" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">UPI ट्रांजेक्शन नोट</label>
+          <input type="text" id="admSetNote" value="${escapeHtml(pay.merchantNote || "Gurukul Online Course & Books")}" class="ed-input w-full px-3 py-2.5 rounded-xl" />
+        </div>
+        <button type="button" onclick="adminSaveLivePaymentSettings()" class="w-full emerald-gradient text-white font-extrabold py-3 rounded-xl shadow">
+          <i class="fa-solid fa-floppy-disk mr-1"></i> लाइव UPI सेटिंग सेव करें
+        </button>
+      </div>
+
+      <!-- Anti-Piracy App-Only Gate & Push Relay -->
+      <div class="ed-card p-4 rounded-2xl space-y-3">
+        <h3 class="text-sm font-extrabold text-indigo-700"><i class="fa-solid fa-shield-halved mr-1.5"></i> Anti-Piracy App-Only लॉक व APK सेटिंग</h3>
+        <label class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border cursor-pointer">
+          <div>
+            <div class="font-extrabold text-slate-900">App-Only Security Lock (Browser Block)</div>
+            <div class="text-[10px] text-slate-500">APK बनने के बाद ON करें—छात्र Chrome में कोर्स नहीं खोल पाएंगे।</div>
+          </div>
+          <input type="checkbox" id="admSetAppLock" class="w-5 h-5 accent-indigo-600" ${ps.appOnlyLock ? "checked" : ""} />
+        </label>
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">ऑफिशियल Android APK डाउनलोड लिंक</label>
+          <input type="text" id="admSetApkUrl" value="${escapeHtml(ps.apkDownloadUrl || "")}" placeholder="https://github.com/.../releases/latest" class="ed-input w-full px-3 py-2 rounded-xl" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-bold text-slate-600 mb-1">Background FCM Push Relay URL (बंद ऐप Push हेतु)</label>
+          <input type="text" id="admSetPushUrl" value="${escapeHtml(ps.fcmPushServerUrl || "")}" placeholder="Cloudflare Worker / Apps Script FCM Relay URL" class="ed-input w-full px-3 py-2 rounded-xl" />
+        </div>
+        <button type="button" onclick="adminSaveSecurityAndAppSettings()" class="w-full brand-gradient text-white font-extrabold py-3 rounded-xl shadow">सिक्योरिटी सेटिंग सेव करें</button>
+      </div>
+    </div>
+
+    <!-- Security Audit Logs -->
+    <div class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-extrabold text-rose-700"><i class="fa-solid fa-user-shield mr-1.5"></i> सिक्योरिटी ऑडिट लॉग्स (${logs.length})</h3>
+        ${logs.length ? `<button type="button" onclick="db.ref('securityLogs').remove().then(()=>showToast('लॉग्स क्लियर हो गए','INFO'))" class="bg-rose-100 text-rose-700 font-bold px-3 py-1 rounded-lg text-[10px]">Clear Logs</button>` : ""}
+      </div>
+      <div class="space-y-1.5 max-h-64 overflow-y-auto custom-scroll">
+        ${logs.length ? logs.map((l) => `
+          <div class="p-2.5 rounded-xl bg-slate-50 border flex flex-wrap justify-between gap-2 text-[11px]">
+            <div>
+              <span class="bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-black text-[9px]">${escapeHtml(l.eventType)}</span>
+              <strong class="ml-1">${escapeHtml(l.name || "Unknown")}</strong> — ${escapeHtml(l.details || "")}
+            </div>
+            <span class="text-slate-400">${formatDateTime(l.timestamp)}</span>
+          </div>
+        `).join("") : `<p class="text-center text-slate-400 py-5">कोई संदिग्ध गतिविधि रिकॉर्ड नहीं हुई है।</p>`}
+      </div>
+    </div>
+  `;
+}
+
+async function adminSaveLivePaymentSettings() {
+  const upiId = document.getElementById("admSetUpiId").value.trim();
+  const accountHolder = document.getElementById("admSetHolder").value.trim();
+  const merchantNote = document.getElementById("admSetNote").value.trim();
+  if (!upiId || !upiId.includes("@") || !accountHolder) {
+    return showAppAlert("कृपया सही UPI ID (जैसे: 8739840038@ybl) और अकाउंट होल्डर का नाम दर्ज करें।", "अमान्य UPI", "DANGER");
+  }
+  await db.ref("publicSettings/payment").set({ upiId, accountHolder, merchantNote });
+  showToast("लाइव UPI सेटिंग सभी छात्रों के लिए अपडेट हो गई!", "SUCCESS");
+}
+
+async function adminSaveSecurityAndAppSettings() {
+  await db.ref("publicSettings").update({
+    appOnlyLock: Boolean(document.getElementById("admSetAppLock").checked),
+    apkDownloadUrl: document.getElementById("admSetApkUrl").value.trim(),
+    fcmPushServerUrl: document.getElementById("admSetPushUrl").value.trim()
+  });
+  showToast("सिक्योरिटी और ऐप सेटिंग सेव हो गई!", "SUCCESS");
+}
