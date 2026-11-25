@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "309899461267",
+    "firebase_url": "https://gurukul-online-app-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "gurukul-online-app",
+    "storage_bucket": "gurukul-online-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:309899461267:android:8962723d4e2103b1b90366",
+        "android_client_info": {
+          "package_name": "com.gurukul.onlineapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAhttbxCWq6E6S2sWrojejBrRHzQBtB9g0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
