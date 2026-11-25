@@ -1,6 +1,6 @@
 /* =====================================================================
    GURUKUL ONLINE APP — AUTHENTICATION, EMAIL OTP, DEVICE LOCK & PUSH
-   File: js/auth.js
+   File: js/auth.js (With Native Android APK Closed-App FCM Push Support)
    ===================================================================== */
 
 let signupOtpHash = null;
@@ -10,6 +10,8 @@ let isSignupEmailVerified = false;
 let activeRealtimeRefs = [];
 let studentKnownNotifTs = Number(localStorage.getItem("GURUKUL_LAST_SEEN_NOTIF_TS") || 0);
 let currentSessionToken = localStorage.getItem("GURUKUL_SESSION_TOKEN") || "";
+let nativePushListenersBound = false;
+let isNativePushGranted = false;
 
 // =========================================================
 // 1. MODAL & NAVIGATION HELPERS
@@ -112,7 +114,7 @@ async function sendSignupEmailOTP() {
   const rawOtp = String(Math.floor(100000 + Math.random() * 900000));
   signupOtpHash = await sha256Hash(`${rawOtp}::${email}::GURUKUL_OTP`);
   signupOtpEmail = email;
-  signupOtpExpiry = Date.now() + 10 * 60 * 1000; // 10 मिनट वैधता
+  signupOtpExpiry = Date.now() + 10 * 60 * 1000;
   isSignupEmailVerified = false;
 
   const htmlBody = buildOfficialEmailHTML({
@@ -233,7 +235,6 @@ async function handleStudentSignup() {
     await db.ref(`users/${uid}`).set(profileData);
     showToast("स्वागत है! आपका अकाउंट सफलतापूर्वक बन गया।", "SUCCESS");
 
-    // Welcome Email (Background non-blocking)
     sendAppEmail({
       to: email,
       subject: `स्वागत है ${name}! आपका GURUKUL ONLINE APP अकाउंट तैयार है`,
@@ -346,11 +347,9 @@ function hideAppSplashLoader() {
   if (splash) splash.classList.add("splash-hidden");
 }
 
-// Hard Single-Device Security Verification for Students
 async function verifyAndBindStudentDevice(uid, profile) {
   const myDeviceId = getOrCreateDeviceId();
 
-  // Case 1: Fresh account or Admin reset device lock
   if (!profile.boundDeviceId) {
     currentSessionToken = `SES_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     localStorage.setItem("GURUKUL_SESSION_TOKEN", currentSessionToken);
@@ -364,7 +363,6 @@ async function verifyAndBindStudentDevice(uid, profile) {
     return true;
   }
 
-  // Case 2: Same authorized device
   if (profile.boundDeviceId === myDeviceId) {
     currentSessionToken = currentSessionToken || `SES_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     localStorage.setItem("GURUKUL_SESSION_TOKEN", currentSessionToken);
@@ -376,7 +374,6 @@ async function verifyAndBindStudentDevice(uid, profile) {
     return true;
   }
 
-  // Case 3: Different device detected (Anti-Account-Sharing Protection)
   logSecurityEvent("DEVICE_MISMATCH_BLOCKED", `Registered: ${profile.boundDeviceId}, Attempted: ${myDeviceId}`);
 
   if ((Number(profile.deviceResetCount) || 0) < 1) {
@@ -413,7 +410,6 @@ async function verifyAndBindStudentDevice(uid, profile) {
   return false;
 }
 
-// Start Student Session & Attach Live Firebase Listeners
 function startStudentAppSession(user, profile) {
   APP_STATE.currentUser = user;
   APP_STATE.userProfile = profile;
@@ -429,7 +425,6 @@ function startStudentAppSession(user, profile) {
 
   const uid = user.uid;
 
-  // 1. Live Profile, Block & Remote Session Kick Listener
   trackRealtimeRef(db.ref(`users/${uid}`), "value", async (snap) => {
     const updated = snap.val();
     if (!updated) return;
@@ -458,7 +453,6 @@ function startStudentAppSession(user, profile) {
     renderStudentProfileSection();
   });
 
-  // 2. Live Catalog (Batches & Books)
   trackRealtimeRef(db.ref("batches"), "value", (snap) => {
     APP_STATE.batches = snap.val() || {};
     if (typeof window.renderHomeDashboard === "function") window.renderHomeDashboard();
@@ -471,7 +465,6 @@ function startStudentAppSession(user, profile) {
     if (typeof window.renderBookStoreGrid === "function") window.renderBookStoreGrid();
   });
 
-  // 3. Student's Active Enrollments (Paid & Free Courses)
   trackRealtimeRef(db.ref(`enrollments/${uid}`), "value", (snap) => {
     APP_STATE.enrollments = snap.val() || {};
     if (typeof window.renderHomeDashboard === "function") window.renderHomeDashboard();
@@ -479,14 +472,12 @@ function startStudentAppSession(user, profile) {
     if (typeof window.renderMyEnrolledBatches === "function") window.renderMyEnrolledBatches();
   });
 
-  // 4. Student's Orders (Zero-Panic Payment & Book Tracking)
   trackRealtimeRef(db.ref(`orders/${uid}`), "value", (snap) => {
     APP_STATE.orders = snap.val() || {};
     if (typeof window.renderHomePendingOrderBanner === "function") window.renderHomePendingOrderBanner();
     if (typeof window.renderStudentOrdersTracker === "function") window.renderStudentOrdersTracker();
   });
 
-  // 5. CBT Tests & Attempts
   trackRealtimeRef(db.ref("tests"), "value", (snap) => {
     APP_STATE.tests = snap.val() || {};
     if (typeof window.renderHomeDashboard === "function") window.renderHomeDashboard();
@@ -498,7 +489,6 @@ function startStudentAppSession(user, profile) {
     if (typeof window.renderStudentTestsList === "function") window.renderStudentTestsList();
   });
 
-  // 6. Doubts & Bookmarks
   trackRealtimeRef(db.ref(`doubts/${uid}`), "value", (snap) => {
     APP_STATE.doubts = snap.val() || {};
     if (typeof window.renderStudentDoubtsList === "function") window.renderStudentDoubtsList();
@@ -509,14 +499,13 @@ function startStudentAppSession(user, profile) {
     if (typeof window.renderStudentBookmarksList === "function") window.renderStudentBookmarksList();
   });
 
-  // 7. Live Notifications (In-App + Status Bar Vibration)
   trackRealtimeRef(db.ref("notifications"), "value", (snap) => {
     APP_STATE.notifications = snap.val() || {};
     processIncomingStudentNotifications();
   });
 
   switchStudentTab("home");
-  setTimeout(() => enableAppPushNotifications(false), 1500);
+  setTimeout(() => enableAppPushNotifications(false), 1200);
 }
 
 function renderStudentProfileSection() {
@@ -540,11 +529,13 @@ function renderStudentProfileSection() {
   if (dvEl) dvEl.textContent = getOrCreateDeviceId();
 
   const pushEl = document.getElementById("profilePushStatus");
-  if (pushEl && "Notification" in window) {
-    if (Notification.permission === "granted") {
+  if (pushEl) {
+    const webGranted = "Notification" in window && Notification.permission === "granted";
+    const webDenied = "Notification" in window && Notification.permission === "denied";
+    if (isNativePushGranted || webGranted) {
       pushEl.textContent = "Active ✅";
       pushEl.className = "text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-extrabold";
-    } else if (Notification.permission === "denied") {
+    } else if (webDenied) {
       pushEl.textContent = "Blocked";
       pushEl.className = "text-[10px] bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-extrabold";
     }
@@ -563,8 +554,18 @@ function updateHeaderCartBadges() {
 }
 
 // =========================================================
-// 5. NOTIFICATIONS CENTER & CLOSED-APP BACKGROUND FCM PUSH
+// 5. NOTIFICATIONS CENTER & CLOSED-APP NATIVE + WEB FCM PUSH
 // =========================================================
+function getCapacitorPushPlugin() {
+  try {
+    const cap = window.Capacitor;
+    if (cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) {
+      return (cap.Plugins && cap.Plugins.PushNotifications) || null;
+    }
+  } catch (e) {}
+  return null;
+}
+
 function getFilteredStudentNotifications() {
   const uid = APP_STATE.currentUser && APP_STATE.currentUser.uid;
   const target = (APP_STATE.userProfile && APP_STATE.userProfile.target) || "";
@@ -597,7 +598,9 @@ function processIncomingStudentNotifications() {
     const latest = unread[0];
     triggerAlertFeedback();
     showToast(`🔔 ${latest.title}`, "INFO");
-    fireNativeStatusBarNotification(`🔔 ${latest.title}`, latest.message || "", latest.id);
+    if (!getCapacitorPushPlugin()) {
+      fireNativeStatusBarNotification(`🔔 ${latest.title}`, latest.message || "", latest.id);
+    }
   }
 }
 
@@ -645,7 +648,90 @@ async function fireNativeStatusBarNotification(title, body, tagId) {
   } catch (e) {}
 }
 
+async function saveUserFcmToken(tokenValue, platformName) {
+  if (!tokenValue || !APP_STATE.currentUser) return;
+  const uid = APP_STATE.currentUser.uid;
+  await db.ref(`fcmTokens/${uid}`).set({
+    uid,
+    token: tokenValue,
+    platform: platformName,
+    name: (APP_STATE.userProfile && APP_STATE.userProfile.name) || "Student",
+    target: (APP_STATE.userProfile && APP_STATE.userProfile.target) || "ALL",
+    updatedAt: Date.now()
+  });
+}
+
 async function enableAppPushNotifications(isManualClick = false) {
+  // 1. NATIVE ANDROID APK PUSH (WORKS EVEN WHEN APP IS FORCE-CLOSED)
+  const nativePush = getCapacitorPushPlugin();
+  if (nativePush) {
+    try {
+      try {
+        await nativePush.createChannel({
+          id: "gurukul_alerts",
+          name: "Gurukul Alerts",
+          description: "Live classes, notices & payment updates",
+          importance: 5,
+          visibility: 1,
+          sound: "default",
+          vibration: true
+        });
+      } catch (e) {}
+
+      if (!nativePushListenersBound) {
+        nativePushListenersBound = true;
+
+        nativePush.addListener("registration", async (tokenObj) => {
+          if (tokenObj && tokenObj.value) {
+            isNativePushGranted = true;
+            await saveUserFcmToken(tokenObj.value, "ANDROID_APK");
+            renderStudentProfileSection();
+          }
+        });
+
+        nativePush.addListener("registrationError", (err) => {
+          console.warn("Native Push Registration Error:", err);
+        });
+
+        nativePush.addListener("pushNotificationReceived", (notif) => {
+          triggerAlertFeedback();
+          showToast(`🔔 ${(notif && notif.title) || "नया अपडेट आया है"}`, "INFO");
+        });
+
+        nativePush.addListener("pushNotificationActionPerformed", () => {
+          openNotificationsModal();
+        });
+      }
+
+      let perm = await nativePush.checkPermissions();
+      if (perm.receive !== "granted") {
+        perm = await nativePush.requestPermissions();
+      }
+
+      if (perm.receive !== "granted") {
+        isNativePushGranted = false;
+        renderStudentProfileSection();
+        if (isManualClick) {
+          showAppAlert(
+            "कृपया फोन की Settings → Apps → GURUKUL ONLINE APP → Notifications में जाकर अनुमति (Allow) चालू करें।",
+            "अनुमति आवश्यक",
+            "WARNING"
+          );
+        }
+        return;
+      }
+
+      isNativePushGranted = true;
+      await nativePush.register();
+      renderStudentProfileSection();
+      if (isManualClick) showToast("Android बैकग्राउंड पुश नोटिफिकेशन चालू हो गया!", "SUCCESS");
+      return;
+    } catch (err) {
+      console.warn("Native Push Error:", err);
+    }
+  }
+
+  // 2. WEB / CHROME PWA PUSH FALLBACK
   try {
     if (!("Notification" in window) || !("serviceWorker" in navigator)) {
       if (isManualClick) showToast("इस ब्राउज़र में बैकग्राउंड नोटिफिकेशन सपोर्ट नहीं है।", "WARNING");
@@ -670,19 +756,11 @@ async function enableAppPushNotifications(isManualClick = false) {
         serviceWorkerRegistration: swReg
       });
 
-      if (token && APP_STATE.currentUser) {
-        const uid = APP_STATE.currentUser.uid;
-        await db.ref(`fcmTokens/${uid}`).set({
-          uid,
-          token,
-          name: (APP_STATE.userProfile && APP_STATE.userProfile.name) || "Student",
-          target: (APP_STATE.userProfile && APP_STATE.userProfile.target) || "ALL",
-          updatedAt: Date.now()
-        });
+      if (token) {
+        await saveUserFcmToken(token, "WEB_PWA");
         if (isManualClick) showToast("बैकग्राउंड पुश नोटिफिकेशन सफलतापूर्वक चालू हो गया!", "SUCCESS");
       }
 
-      // Foreground FCM listener
       messaging.onMessage((payload) => {
         const d = (payload && (payload.notification || payload.data)) || {};
         if (d.title) {
@@ -720,7 +798,6 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // ADMIN UID AUTO-ROUTE
     if (user.uid === APP_CONFIG.adminUid) {
       APP_STATE.currentUser = user;
       APP_STATE.isAdmin = true;
@@ -733,7 +810,6 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // STUDENT PROFILE & SINGLE-DEVICE VERIFICATION
     try {
       const splashTxt = document.getElementById("splashStatusText");
       if (splashTxt) splashTxt.textContent = "डिवाइस सिक्योरिटी और कोर्स लोड हो रहे हैं...";
