@@ -1,0 +1,26 @@
+{
+  "name": "GURUKUL ONLINE APP",
+  "short_name": "Gurukul Online",
+  "description": "Gurukul Senior Secondary School Dhankoli — Official Online Courses, Live & Recorded Classes, CBT Tests, Notes, eBooks & Book Store",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "categories": ["education", "books"],
+  "icons": [
+    {
+      "src": "https://gsssdhankoli.github.io/Logo.png/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://gsssdhankoli.github.io/Logo.png/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
