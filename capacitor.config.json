@@ -1,0 +1,27 @@
+{
+  "appId": "com.gurukul.onlineapp",
+  "appName": "GURUKUL ONLINE APP",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false,
+    "allowNavigation": [
+      "*.firebaseio.com",
+      "*.firebasedatabase.app",
+      "*.googleapis.com",
+      "*.youtube.com",
+      "*.youtu.be",
+      "*.google.com",
+      "script.google.com",
+      "script.googleusercontent.com",
+      "*.github.io"
+    ]
+  },
+  "android": {
+    "appendUserAgent": "GurukulOnlineAPK",
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false,
+    "backgroundColor": "#0f172a"
+  }
+}
