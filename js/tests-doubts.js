@@ -824,3 +824,163 @@ function previewDoubtFullImage(src) {
   overlay.onclick = () => overlay.remove();
   document.body.appendChild(overlay);
 }
+/* =====================================================================
+   DROP-IN PATCH FOR js/tests-doubts.js (Fixes minusMark=0 & Solution Images)
+   (Paste at the very bottom of js/tests-doubts.js — No changes needed above)
+   ===================================================================== */
+(function () {
+  function getPlus(t) {
+    return (t && t.plusMark !== undefined && t.plusMark !== null && t.plusMark !== "") ? Number(t.plusMark) : 4;
+  }
+  function getMinus(t) {
+    return (t && t.minusMark !== undefined && t.minusMark !== null && t.minusMark !== "") ? Number(t.minusMark) : 1;
+  }
+
+  const _origSubmit = window.submitActiveCBTTest;
+  window.submitActiveCBTTest = async function (isAutoSubmit = false) {
+    if (!activeCBT || activeCBT.isSubmitting) return;
+    const t = APP_STATE.tests[activeCBT.testId];
+    if (!t || getMinus(t) !== 0) {
+      return _origSubmit(isAutoSubmit);
+    }
+
+    // Exact grading when minusMark === 0
+    activeCBT.isSubmitting = true;
+    if (cbtTimerInterval) {
+      clearInterval(cbtTimerInterval);
+      cbtTimerInterval = null;
+    }
+
+    const { testId, uid, answers, startedAtMs, durationSec } = activeCBT;
+    document.getElementById("cbtRunnerBody").innerHTML = `
+      <div class="py-16 text-center space-y-3">
+        <i class="fa-solid fa-spinner fa-spin text-3xl text-indigo-600"></i>
+        <h4 class="text-sm font-extrabold">${isAutoSubmit ? "समय समाप्त! टेस्ट ऑटो-सबमिट हो रहा है..." : "आपका टेस्ट सबमिट और चेक हो रहा है..."}</h4>
+        <p class="text-xs text-slate-500">रैंक, परसेंटाइल और डिटेल्ड सॉल्यूशन तैयार हो रहा है।</p>
+      </div>
+    `;
+
+    try {
+      const p = APP_STATE.userProfile || {};
+      const timeTakenSec = Math.min(durationSec, Math.max(1, Math.floor((Date.now() - startedAtMs) / 1000)));
+      const attemptRef = db.ref(`testAttempts/${testId}/${uid}`);
+
+      const initialSubmission = {
+        uid,
+        studentName: p.name || "Student",
+        studentCode: p.studentCode || "",
+        answers: answers || {},
+        submitted: true,
+        graded: false,
+        timeTakenSec,
+        submittedAt: Date.now()
+      };
+      await attemptRef.set(initialSubmission);
+
+      const ansSnap = await db.ref(`testAnswers/${testId}`).once("value");
+      const ansKeyMap = ansSnap.val() || {};
+      cachedResultAnswersMap[testId] = ansKeyMap;
+
+      const plusMark = getPlus(t);
+      let rightCount = 0, wrongCount = 0, unattemptedCount = 0;
+
+      (t.questions || []).forEach((_, idx) => {
+        const chosen = answers[idx];
+        const keyEntry = ansKeyMap[idx];
+        const correctOpt = (typeof keyEntry === "object" && keyEntry ? keyEntry.correct : keyEntry || "A").toUpperCase();
+        if (!chosen) unattemptedCount++;
+        else if (chosen === correctOpt) rightCount++;
+        else wrongCount++;
+      });
+
+      const totalQ = (t.questions || []).length;
+      const maxMarks = totalQ * plusMark;
+      const score = Number((rightCount * plusMark).toFixed(2));
+      const percentage = maxMarks > 0 ? Number(Math.max(0, (score / maxMarks) * 100).toFixed(2)) : 0;
+      const attemptedTotal = rightCount + wrongCount;
+      const accuracy = attemptedTotal > 0 ? Number(((rightCount / attemptedTotal) * 100).toFixed(1)) : 0;
+
+      const finalGraded = {
+        ...initialSubmission,
+        score, maxMarks, percentage, accuracy,
+        rightCount, wrongCount, unattemptedCount,
+        graded: true
+      };
+      await attemptRef.update(finalGraded);
+
+      if (!APP_STATE.testAttempts[testId]) APP_STATE.testAttempts[testId] = {};
+      APP_STATE.testAttempts[testId][uid] = finalGraded;
+
+      localStorage.removeItem(`GURUKUL_CBT_START_${testId}_${uid}`);
+      localStorage.removeItem(`GURUKUL_CBT_DRAFT_${testId}_${uid}`);
+      activeCBT = null;
+
+      triggerAlertFeedback();
+      showToast("टेस्ट सफलतापूर्वक सबमिट हो गया!", "SUCCESS");
+      renderStudentTestsList();
+      renderCBTResultAndAnalysis(testId);
+    } catch (err) {
+      console.error("CBT Submit Error:", err);
+      if (activeCBT) activeCBT.isSubmitting = false;
+      await showAppAlert("टेस्ट सबमिट करने में समस्या आई: " + (err.message || "इंटरनेट चेक करें"), "त्रुटि", "DANGER");
+    }
+  };
+
+  window.renderCBTSolutionsCards = function (testId, filterMode) {
+    const box = document.getElementById("cbtDetailedSolutionsBox");
+    const t = APP_STATE.tests && APP_STATE.tests[testId];
+    const uid = APP_STATE.currentUser && APP_STATE.currentUser.uid;
+    const myAtt = APP_STATE.testAttempts && APP_STATE.testAttempts[testId] && APP_STATE.testAttempts[testId][uid];
+    const ansKeyMap = cachedResultAnswersMap[testId] || {};
+    if (!box || !t || !myAtt) return;
+
+    const plusMark = getPlus(t);
+    const minusMark = getMinus(t);
+    const myAns = myAtt.answers || {};
+    const cards = [];
+
+    (t.questions || []).forEach((q, idx) => {
+      const chosen = myAns[idx] || "";
+      const keyEntry = ansKeyMap[idx];
+      const correctOpt = (typeof keyEntry === "object" && keyEntry ? keyEntry.correct : keyEntry || "A").toUpperCase();
+      const explanation = (typeof keyEntry === "object" && keyEntry && keyEntry.explanation) ? keyEntry.explanation : "";
+
+      const state = !chosen ? "LEFT" : (chosen === correctOpt ? "RIGHT" : "WRONG");
+      if (filterMode !== "ALL" && state !== filterMode) return;
+
+      const statusBadge = state === "RIGHT"
+        ? `<span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-black text-[10px]">✅ सही (+${plusMark})</span>`
+        : state === "WRONG"
+          ? `<span class="bg-rose-100 text-rose-700 px-2 py-0.5 rounded font-black text-[10px]">❌ गलत (-${minusMark})</span>`
+          : `<span class="bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-black text-[10px]">⚪ छोड़ा गया (0)</span>`;
+
+      cards.push(`
+        <div class="ed-card p-4 rounded-2xl space-y-2.5 text-xs">
+          <div class="flex items-start justify-between gap-2">
+            <div class="font-extrabold text-sm text-slate-900">Q${idx + 1}. ${escapeHtml(q.q)}</div>
+            ${statusBadge}
+          </div>
+          ${q.imageUrl ? `<img src="${escapeHtml(q.imageUrl)}" onclick="previewDoubtFullImage(this.src)" class="max-h-52 rounded-xl border border-slate-200 mx-auto object-contain cursor-pointer" />` : ""}
+          <div class="grid sm:grid-cols-2 gap-2">
+            ${["A", "B", "C", "D"].map((opt) => {
+              let optCls = "border-slate-200 bg-slate-50 text-slate-700";
+              if (opt === correctOpt) optCls = "border-emerald-500 bg-emerald-50 text-emerald-900 font-extrabold";
+              else if (opt === chosen && chosen !== correctOpt) optCls = "border-rose-500 bg-rose-50 text-rose-900 font-extrabold";
+              return `<div class="p-2.5 rounded-xl border ${optCls}"><strong>(${opt})</strong> ${escapeHtml(q[opt] || "")}</div>`;
+            }).join("")}
+          </div>
+          ${explanation ? `
+            <div class="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950 font-semibold leading-relaxed">
+              <strong class="text-indigo-700"><i class="fa-solid fa-lightbulb mr-1"></i>सॉल्यूशन:</strong> ${escapeHtml(explanation)}
+            </div>
+          ` : ""}
+        </div>
+      `);
+    });
+
+    box.innerHTML = cards.length
+      ? cards.join("")
+      : `<div class="p-6 bg-slate-50 rounded-2xl text-center text-xs font-bold text-slate-400">इस फिल्टर में कोई प्रश्न नहीं है।</div>`;
+  };
+})();
+     
