@@ -984,3 +984,376 @@ function previewDoubtFullImage(src) {
   };
 })();
      
+/* =====================================================================
+   DROP-IN UPGRADE V2 (js/tests-doubts.js):
+   - Separate Student Sections (Upcoming, Topic-Wise, Weekly, Complete Syllabus)
+   - Live Upcoming Countdown + Auto-Unlock at Scheduled Time
+   - Visual SVG Donut & Bar Chart in Result Screen (Right / Wrong / Left)
+   (Paste at the very bottom of js/tests-doubts.js — No changes needed above)
+   ===================================================================== */
+(function () {
+  let studentTestSectionFilter = "ALL";
+  let upcomingTickerInterval = null;
+
+  const SECTION_DEFS = [
+    { key: "TOPIC_WISE", title: "टॉपिक-वाइज टेस्ट (Topic-Wise Tests)", short: "📘 Topic-Wise", badgeCls: "bg-sky-100 text-sky-800", icon: "fa-book-open-reader text-sky-600" },
+    { key: "WEEKLY", title: "वीकली टेस्ट (Weekly Tests)", short: "📅 Weekly Test", badgeCls: "bg-violet-100 text-violet-800", icon: "fa-calendar-week text-violet-600" },
+    { key: "FULL_SYLLABUS", title: "कम्पलीट सिलेबस टेस्ट (Complete Syllabus)", short: "🎯 Complete Syllabus", badgeCls: "bg-amber-100 text-amber-900", icon: "fa-award text-amber-600" }
+  ];
+
+  function normalizeType(t) {
+    const raw = String((t && t.testType) || "").toUpperCase();
+    if (raw === "TOPIC_WISE" || raw === "TOPIC") return "TOPIC_WISE";
+    if (raw === "WEEKLY") return "WEEKLY";
+    return "FULL_SYLLABUS";
+  }
+
+  function getScheduleMs(t) {
+    const n = Number(t && t.scheduledAt) || 0;
+    return n > 0 ? n : 0;
+  }
+
+  function isUpcomingTest(t) {
+    return getScheduleMs(t) > Date.now();
+  }
+
+  function formatCountdownText(msDiff) {
+    const totalSec = Math.max(0, Math.floor(msDiff / 1000));
+    const days = Math.floor(totalSec / 86400);
+    const hrs = Math.floor((totalSec % 86400) / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    const pad = (x) => String(x).padStart(2, "0");
+    if (days > 0) return `${days} दिन ${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+    return `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+  }
+
+  function formatSchedTime(ms) {
+    if (typeof formatDateTime === "function") return formatDateTime(ms);
+    return new Date(ms).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  function ensureUpcomingTicker() {
+    if (upcomingTickerInterval) clearInterval(upcomingTickerInterval);
+    upcomingTickerInterval = setInterval(() => {
+      const els = document.querySelectorAll("[data-cbt-sched]");
+      if (!els.length) {
+        clearInterval(upcomingTickerInterval);
+        upcomingTickerInterval = null;
+        return;
+      }
+      let shouldRerender = false;
+      const now = Date.now();
+      els.forEach((el) => {
+        const target = Number(el.getAttribute("data-cbt-sched")) || 0;
+        const diff = target - now;
+        if (diff <= 0) {
+          shouldRerender = true;
+        } else {
+          el.textContent = formatCountdownText(diff);
+        }
+      });
+      if (shouldRerender) {
+        renderStudentTestsList();
+      }
+    }, 1000);
+  }
+
+  window.setStudentTestSectionFilter = function (key) {
+    studentTestSectionFilter = key;
+    renderStudentTestsList();
+  };
+
+  window.notifyUpcomingTestLocked = function (testId) {
+    const t = APP_STATE.tests && APP_STATE.tests[testId];
+    if (!t) return;
+    const ms = getScheduleMs(t);
+    if (ms <= Date.now()) {
+      return openCBTTestOverview(testId);
+    }
+    showAppAlert(
+      `यह टेस्ट अभी शुरू नहीं हुआ है।\n\nनिर्धारित समय: ${formatSchedTime(ms)}\nशेष समय: ${formatCountdownText(ms - Date.now())}\n\nसमय पूरा होते ही यह टेस्ट अपने-आप खुल जाएगा।`,
+      "⏰ Upcoming Scheduled Test",
+      "INFO"
+    );
+  };
+
+  function buildSingleTestCardHTML(t, uid) {
+    const hasAccess = APP_STATE.isAdmin || t.isFree || (t.batchId && isStudentEnrolledInBatch(t.batchId));
+    const attemptsForTest = (APP_STATE.testAttempts && APP_STATE.testAttempts[t.testId]) || {};
+    const myAttempt = uid ? attemptsForTest[uid] : null;
+    const isCompleted = Boolean(myAttempt && myAttempt.graded);
+    const totalQ = (t.questions || []).length;
+    const plusMark = (t.plusMark !== undefined && t.plusMark !== null && t.plusMark !== "") ? Number(t.plusMark) : 4;
+    const minusMark = (t.minusMark !== undefined && t.minusMark !== null && t.minusMark !== "") ? Number(t.minusMark) : 1;
+    const maxMarks = totalQ * plusMark;
+    const batchName = t.batchId && APP_STATE.batches[t.batchId] ? APP_STATE.batches[t.batchId].title : "";
+
+    const typeKey = normalizeType(t);
+    const secInfo = SECTION_DEFS.find((s) => s.key === typeKey) || SECTION_DEFS[2];
+    const schedMs = getScheduleMs(t);
+    const upcoming = schedMs > Date.now();
+
+    return `
+      <div class="ed-card p-4 rounded-2xl flex flex-col justify-between gap-3 text-xs ${upcoming ? "border-2 border-amber-300 bg-amber-50/30" : ""}">
+        <div class="space-y-1.5">
+          <div class="flex flex-wrap items-center justify-between gap-1.5">
+            <div class="flex flex-wrap items-center gap-1">
+              <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${secInfo.badgeCls}">${secInfo.short}</span>
+              <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${t.isFree ? "bg-emerald-100 text-emerald-800" : "bg-pink-100 text-pink-800"}">
+                ${t.isFree ? "FREE" : "BATCH"}
+              </span>
+            </div>
+            <span class="text-[10px] font-bold text-slate-500">${escapeHtml(t.category || "All Exams")}</span>
+          </div>
+
+          <h4 class="font-extrabold text-sm text-slate-900 leading-snug">${escapeHtml(t.title)}</h4>
+          ${batchName ? `<p class="text-[11px] font-bold text-indigo-600"><i class="fa-solid fa-layer-group mr-1"></i>${escapeHtml(batchName)}</p>` : ""}
+
+          ${upcoming ? `
+            <div class="p-2.5 rounded-xl bg-amber-100/80 border border-amber-300 text-amber-950 space-y-0.5">
+              <div class="text-[10px] font-extrabold"><i class="fa-regular fa-calendar-clock mr-1"></i>शुरू होगा: ${escapeHtml(formatSchedTime(schedMs))}</div>
+              <div class="text-[11px] font-black text-rose-700">⏳ शेष समय: <span class="font-mono" data-cbt-sched="${schedMs}">${formatCountdownText(schedMs - Date.now())}</span></div>
+            </div>
+          ` : ""}
+
+          <div class="flex flex-wrap gap-2 pt-1 text-[11px] font-semibold text-slate-600">
+            <span><i class="fa-solid fa-list-ol text-indigo-500 mr-1"></i>${totalQ} सवाल (${maxMarks} अंक)</span>
+            <span><i class="fa-regular fa-clock text-amber-500 mr-1"></i>${t.duration || 30} मिनट</span>
+            <span><i class="fa-solid fa-scale-balanced text-rose-500 mr-1"></i>+${plusMark} / -${minusMark}</span>
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+          ${isCompleted
+            ? `<div class="text-[11px] font-extrabold text-emerald-700">स्कोर: ${myAttempt.score}/${myAttempt.maxMarks} (${myAttempt.percentage}%)</div>
+               <button type="button" onclick="renderCBTResultAndAnalysis('${escapeHtml(t.testId)}')" class="emerald-gradient text-white font-extrabold px-3.5 py-2 rounded-xl text-xs shadow"><i class="fa-solid fa-chart-pie mr-1"></i>रिजल्ट व सॉल्यूशन</button>`
+            : upcoming
+              ? `<div class="text-[11px] font-extrabold text-amber-800"><i class="fa-solid fa-hourglass-half mr-1"></i>Upcoming</div>
+                 <button type="button" onclick="notifyUpcomingTestLocked('${escapeHtml(t.testId)}')" class="bg-amber-400 text-slate-950 font-extrabold px-3.5 py-2 rounded-xl text-xs shadow"><i class="fa-solid fa-lock mr-1"></i>समय देखें</button>`
+              : hasAccess
+                ? `<div class="text-[11px] font-bold text-slate-500">${Object.keys(attemptsForTest).length} छात्रों ने दिया</div>
+                   <button type="button" onclick="openCBTTestOverview('${escapeHtml(t.testId)}')" class="brand-gradient text-white font-extrabold px-4 py-2 rounded-xl text-xs shadow"><i class="fa-solid fa-play mr-1"></i>टेस्ट शुरू करें</button>`
+                : `<div class="text-[11px] font-bold text-rose-600"><i class="fa-solid fa-lock mr-1"></i>बैच आवश्यक</div>
+                   <button type="button" onclick="openBatchDetailModal('${escapeHtml(t.batchId)}')" class="bg-amber-400 text-slate-950 font-extrabold px-3.5 py-2 rounded-xl text-xs shadow">बैच देखें</button>`
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  window.renderStudentTestsList = function () {
+    const box = document.getElementById("myTestsBox");
+    if (!box) return;
+
+    const uid = APP_STATE.currentUser && APP_STATE.currentUser.uid;
+    const allActive = Object.values(APP_STATE.tests || {})
+      .filter((t) => t && t.status === "ACTIVE")
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+    if (!allActive.length) {
+      box.innerHTML = `
+        <div class="sm:col-span-2 ed-card p-8 rounded-2xl text-center space-y-2">
+          <i class="fa-solid fa-laptop-code text-3xl text-pink-400"></i>
+          <h4 class="text-sm font-extrabold">अभी कोई ऑनलाइन CBT टेस्ट लाइव नहीं है</h4>
+          <p class="text-xs text-slate-500">नया टेस्ट अपलोड होते ही आपको नोटिफिकेशन मिल जाएगा।</p>
+        </div>
+      `;
+      return;
+    }
+
+    const upcomingList = allActive
+      .filter((t) => isUpcomingTest(t))
+      .sort((a, b) => getScheduleMs(a) - getScheduleMs(b));
+    const liveList = allActive.filter((t) => !isUpcomingTest(t));
+
+    const counts = {
+      ALL: allActive.length,
+      UPCOMING: upcomingList.length,
+      TOPIC_WISE: liveList.filter((t) => normalizeType(t) === "TOPIC_WISE").length,
+      WEEKLY: liveList.filter((t) => normalizeType(t) === "WEEKLY").length,
+      FULL_SYLLABUS: liveList.filter((t) => normalizeType(t) === "FULL_SYLLABUS").length
+    };
+
+    const filterTabsHtml = `
+      <div class="sm:col-span-2 flex flex-wrap gap-1.5 bg-slate-100 p-1.5 rounded-2xl text-[11px] font-extrabold">
+        ${[
+          ["ALL", `सभी (${counts.ALL})`],
+          ["UPCOMING", `⏰ Upcoming (${counts.UPCOMING})`],
+          ["TOPIC_WISE", `📘 Topic-Wise (${counts.TOPIC_WISE})`],
+          ["WEEKLY", `📅 Weekly (${counts.WEEKLY})`],
+          ["FULL_SYLLABUS", `🎯 Complete Syllabus (${counts.FULL_SYLLABUS})`]
+        ].map(([k, lbl]) => `
+          <button type="button" onclick="setStudentTestSectionFilter('${k}')" class="px-3 py-1.5 rounded-xl transition ${studentTestSectionFilter === k ? "bg-indigo-600 text-white shadow" : "bg-white text-slate-700 hover:bg-indigo-50"}">${lbl}</button>
+        `).join("")}
+      </div>
+    `;
+
+    let htmlParts = [filterTabsHtml];
+
+    // 1. Upcoming Scheduled Section
+    if ((studentTestSectionFilter === "ALL" || studentTestSectionFilter === "UPCOMING") && upcomingList.length) {
+      htmlParts.push(`
+        <div class="sm:col-span-2 flex items-center justify-between bg-amber-50 border border-amber-200 px-3.5 py-2 rounded-xl">
+          <span class="text-xs font-extrabold text-amber-950"><i class="fa-regular fa-calendar-check text-amber-600 mr-1.5"></i>आगामी शेड्यूल टेस्ट (Upcoming Scheduled Tests)</span>
+          <span class="text-[10px] font-black bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full">${upcomingList.length}</span>
+        </div>
+      `);
+      htmlParts.push(...upcomingList.map((t) => buildSingleTestCardHTML(t, uid)));
+    } else if (studentTestSectionFilter === "UPCOMING" && !upcomingList.length) {
+      htmlParts.push(`<div class="sm:col-span-2 ed-card p-6 rounded-2xl text-center text-xs font-bold text-slate-400">अभी कोई आगामी (Upcoming) टेस्ट शेड्यूल नहीं है।</div>`);
+    }
+
+    // 2. Separate Sections for Live Tests (Topic-Wise, Weekly, Complete Syllabus)
+    SECTION_DEFS.forEach((sec) => {
+      if (studentTestSectionFilter !== "ALL" && studentTestSectionFilter !== sec.key) return;
+      const items = liveList.filter((t) => normalizeType(t) === sec.key);
+
+      if (studentTestSectionFilter === "ALL" && !items.length) return;
+
+      htmlParts.push(`
+        <div class="sm:col-span-2 flex items-center justify-between bg-slate-100/90 border border-slate-200 px-3.5 py-2 rounded-xl mt-1">
+          <span class="text-xs font-extrabold text-slate-900"><i class="fa-solid ${sec.icon} mr-1.5"></i>${sec.title}</span>
+          <span class="text-[10px] font-black bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-full">${items.length}</span>
+        </div>
+      `);
+
+      if (items.length) {
+        htmlParts.push(...items.map((t) => buildSingleTestCardHTML(t, uid)));
+      } else {
+        htmlParts.push(`<div class="sm:col-span-2 ed-card p-6 rounded-2xl text-center text-xs font-bold text-slate-400">इस सेक्शन में अभी कोई लाइव टेस्ट नहीं है।</div>`);
+      }
+    });
+
+    box.innerHTML = htmlParts.join("");
+    if (upcomingList.length) ensureUpcomingTicker();
+  };
+
+  // Block opening/starting a test before scheduled time
+  const _origOverview = window.openCBTTestOverview;
+  window.openCBTTestOverview = function (testId) {
+    const t = APP_STATE.tests && APP_STATE.tests[testId];
+    if (t && !APP_STATE.isAdmin && isUpcomingTest(t)) {
+      return notifyUpcomingTestLocked(testId);
+    }
+    return _origOverview(testId);
+  };
+
+  const _origStart = window.startCBTTestSession;
+  window.startCBTTestSession = function (testId) {
+    const t = APP_STATE.tests && APP_STATE.tests[testId];
+    if (t && !APP_STATE.isAdmin && isUpcomingTest(t)) {
+      return notifyUpcomingTestLocked(testId);
+    }
+    return _origStart(testId);
+  };
+
+  // =========================================================
+  // VISUAL CHART IN RESULT SECTION (RIGHT / WRONG / SKIPPED)
+  // =========================================================
+  function buildResultChartCardHTML(t, myAtt) {
+    const right = Math.max(0, Number(myAtt.rightCount) || 0);
+    const wrong = Math.max(0, Number(myAtt.wrongCount) || 0);
+    const left = Math.max(0, Number(myAtt.unattemptedCount) || 0);
+    const total = Math.max(1, right + wrong + left);
+
+    const plusMark = (t && t.plusMark !== undefined && t.plusMark !== null && t.plusMark !== "") ? Number(t.plusMark) : 4;
+    const minusMark = (t && t.minusMark !== undefined && t.minusMark !== null && t.minusMark !== "") ? Number(t.minusMark) : 1;
+
+    const pctRight = Number(((right / total) * 100).toFixed(1));
+    const pctWrong = Number(((wrong / total) * 100).toFixed(1));
+    const pctLeft = Number(((left / total) * 100).toFixed(1));
+
+    const r = 42;
+    const C = 2 * Math.PI * r;
+    const lenRight = (right / total) * C;
+    const lenWrong = (wrong / total) * C;
+    const lenLeft = (left / total) * C;
+
+    const offRight = 0;
+    const offWrong = -lenRight;
+    const offLeft = -(lenRight + lenWrong);
+
+    return `
+      <div id="cbtResultVisualChartCard" class="ed-card p-4 rounded-2xl space-y-3 text-xs">
+        <div class="flex items-center justify-between">
+          <h4 class="font-extrabold text-sm text-slate-900">
+            <i class="fa-solid fa-chart-pie text-indigo-600 mr-1.5"></i> प्रश्न विश्लेषण चार्ट (Performance Chart)
+          </h4>
+          <span class="text-[10px] font-black px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700">कुल प्रश्न: ${right + wrong + left}</span>
+        </div>
+
+        <div class="grid sm:grid-cols-5 gap-4 items-center">
+          <!-- SVG Donut Chart -->
+          <div class="sm:col-span-2 flex flex-col items-center justify-center">
+            <div class="relative w-36 h-36">
+              <svg viewBox="0 0 110 110" class="w-full h-full -rotate-90">
+                <circle cx="55" cy="55" r="${r}" fill="none" stroke="#e2e8f0" stroke-width="14" />
+                ${right > 0 ? `<circle cx="55" cy="55" r="${r}" fill="none" stroke="#10b981" stroke-width="14" stroke-dasharray="${lenRight.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${offRight.toFixed(2)}" />` : ""}
+                ${wrong > 0 ? `<circle cx="55" cy="55" r="${r}" fill="none" stroke="#ef4444" stroke-width="14" stroke-dasharray="${lenWrong.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${offWrong.toFixed(2)}" />` : ""}
+                ${left > 0 ? `<circle cx="55" cy="55" r="${r}" fill="none" stroke="#94a3b8" stroke-width="14" stroke-dasharray="${lenLeft.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${offLeft.toFixed(2)}" />` : ""}
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                <span class="text-[10px] font-bold text-slate-500">Accuracy</span>
+                <span class="text-base font-black text-slate-900">${myAtt.accuracy ?? 0}%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Horizontal Bars & Marks Impact -->
+          <div class="sm:col-span-3 space-y-2.5">
+            <!-- Right -->
+            <div class="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-1">
+              <div class="flex items-center justify-between font-extrabold text-emerald-900">
+                <span>✅ सही किए (Correct)</span>
+                <span>${right} प्रश्न (${pctRight}%) • <strong class="text-emerald-700">+${Number((right * plusMark).toFixed(2))} अंक</strong></span>
+              </div>
+              <div class="w-full h-2 bg-emerald-100 rounded-full overflow-hidden">
+                <div class="h-full bg-emerald-500 rounded-full" style="width:${pctRight}%"></div>
+              </div>
+            </div>
+
+            <!-- Wrong -->
+            <div class="p-2.5 rounded-xl bg-rose-50/70 border border-rose-200 space-y-1">
+              <div class="flex items-center justify-between font-extrabold text-rose-900">
+                <span>❌ गलत किए (Wrong)</span>
+                <span>${wrong} प्रश्न (${pctWrong}%) • <strong class="text-rose-700">-${Number((wrong * minusMark).toFixed(2))} अंक</strong></span>
+              </div>
+              <div class="w-full h-2 bg-rose-100 rounded-full overflow-hidden">
+                <div class="h-full bg-rose-500 rounded-full" style="width:${pctWrong}%"></div>
+              </div>
+            </div>
+
+            <!-- Skipped -->
+            <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <div class="flex items-center justify-between font-extrabold text-slate-800">
+                <span>⚪ छोड़ दिए (Unattempted)</span>
+                <span>${left} प्रश्न (${pctLeft}%) • <strong>0 अंक</strong></span>
+              </div>
+              <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div class="h-full bg-slate-400 rounded-full" style="width:${pctLeft}%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const _origRenderResult = window.renderCBTResultAndAnalysis;
+  window.renderCBTResultAndAnalysis = async function (testId) {
+    await _origRenderResult(testId);
+
+    const t = APP_STATE.tests && APP_STATE.tests[testId];
+    const uid = APP_STATE.currentUser && APP_STATE.currentUser.uid;
+    const myAtt = APP_STATE.testAttempts && APP_STATE.testAttempts[testId] && APP_STATE.testAttempts[testId][uid];
+    const body = document.getElementById("cbtRunnerBody");
+    if (!t || !myAtt || !myAtt.graded || !body) return;
+    if (document.getElementById("cbtResultVisualChartCard")) return;
+
+    const firstStrip = body.firstElementChild;
+    if (firstStrip) {
+      firstStrip.insertAdjacentHTML("afterend", buildResultChartCardHTML(t, myAtt));
+    }
+  };
+})();
