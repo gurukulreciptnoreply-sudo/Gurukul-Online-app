@@ -24,8 +24,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. Prepare Web Assets (www) & Capacitor 6
+      - name: 4. Prepare Web Assets (www), Capacitor 6 & Native Push Plugin
         run: |
+          if [ ! -f google-services.json ]; then
+            echo "ERROR: google-services.json root folder me upload karein!"
+            exit 1
+          fi
+
           mkdir -p www
           cp index.html manifest.json firebase-messaging-sw.js www/
           cp -r css js www/
@@ -40,8 +45,9 @@ jobs:
           EOF
           fi
 
-          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/push-notifications@6
           npx cap add android
+          cp google-services.json android/app/google-services.json
           npx cap sync android
 
       - name: 5. Inject Banking-Grade FLAG_SECURE in MainActivity.java
@@ -57,7 +63,6 @@ jobs:
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  // Banking-App Level Native Screenshot, Screen Recording & Cast Protection
                   getWindow().setFlags(
                       WindowManager.LayoutParams.FLAG_SECURE,
                       WindowManager.LayoutParams.FLAG_SECURE
@@ -66,26 +71,22 @@ jobs:
           }
           EOF
 
-      - name: 6. Harden AndroidManifest (UPI, WhatsApp, Notifications, No-Backup) & Auto VersionCode
+      - name: 6. Harden AndroidManifest (UPI, WhatsApp, High-Priority FCM Channel) & Auto VersionCode
         env:
           RUN_NUM: ${{ github.run_number }}
         run: |
           python3 - << 'EOF'
           import os, re
 
-          manifest_path = "android/app/src/main/res/xml/config.xml"
           am_path = "android/app/src/main/AndroidManifest.xml"
-
           with open(am_path, "r", encoding="utf-8") as f:
               xml = f.read()
 
-          # Disable ADB/Cloud Data Backup
           if 'android:allowBackup="true"' in xml:
               xml = xml.replace('android:allowBackup="true"', 'android:allowBackup="false"')
           elif 'android:allowBackup=' not in xml:
               xml = xml.replace('<application', '<application android:allowBackup="false"', 1)
 
-          # Add Android 13+ Notification Permission & Android 11+ UPI/WhatsApp/Call Queries
           extra_block = """
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <queries>
@@ -106,10 +107,13 @@ jobs:
           if "POST_NOTIFICATIONS" not in xml:
               xml = xml.replace("<application", extra_block + "\n    <application", 1)
 
+          channel_meta = '\n        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="gurukul_alerts" />\n'
+          if "default_notification_channel_id" not in xml:
+              xml = xml.replace("</application>", channel_meta + "    </application>", 1)
+
           with open(am_path, "w", encoding="utf-8") as f:
               f.write(xml)
 
-          # Increment versionCode automatically using GitHub Run Number
           gradle_path = "android/app/build.gradle"
           run_num = os.environ.get("RUN_NUM", "1")
           with open(gradle_path, "r", encoding="utf-8") as f:
@@ -182,7 +186,6 @@ jobs:
           SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           BUILD_TOOLS=$(ls -d "$SDK_DIR/build-tools/"* | sort -V | tail -n 1)
 
-          # Zipalign & Sign Release APK (v1+v2+v3 Schemes)
           "$BUILD_TOOLS/zipalign" -v -p 4 \
             android/app/build/outputs/apk/release/app-release-unsigned.apk \
             release-output/aligned.apk
@@ -197,7 +200,6 @@ jobs:
 
           rm -f release-output/aligned.apk release-output/*.idsig
 
-          # Sign Play Store AAB Bundle
           cp android/app/build/outputs/bundle/release/app-release.aab release-output/GURUKUL-ONLINE-APP.aab
           jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
             -keystore release.keystore \
