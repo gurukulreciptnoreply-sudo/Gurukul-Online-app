@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>GURUKUL ONLINE APP | Courses, Live Classes, CBT Tests & Book Store</title>
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#4f46e5" />
+  <link rel="apple-touch-icon" href="https://gsssdhankoli.github.io/Logo.png/logo.png" />
+
+  <!-- Tailwind CSS (Class Dark Mode Enabled) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' };
+  </script>
+
+  <!-- Icons & Fonts -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Custom EdTech Stylesheet -->
+  <link rel="stylesheet" href="./css/style.css" />
+
+  <!-- PDF Receipt Generator & Protected PDF.js Canvas Viewer -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+  <!-- Firebase Compat SDK 10.12.2 -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>
+
+  <!-- YouTube IFrame API (For Custom Protected Player Controls) -->
+  <script src="https://www.youtube.com/iframe_api" async></script>
+</head>
+<body class="min-h-screen antialiased">
+
+  <!-- ========================================================= -->
+  <!-- 1. STARTUP SPLASH LOADER                                  -->
+  <!-- ========================================================= -->
+  <div id="appSplashLoader">
+    <div class="splash-ring">
+      <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" alt="Logo" class="w-20 h-20 rounded-full bg-white p-1 object-contain border-2 border-amber-400 shadow-2xl" />
+    </div>
+    <span class="bg-amber-400 text-slate-950 text-[10px] font-black px-3 py-0.5 rounded-full uppercase tracking-wider mb-2">Official EdTech Platform</span>
+    <h1 class="text-lg sm:text-2xl font-extrabold tracking-tight text-white">GURUKUL ONLINE APP</h1>
+    <p id="splashStatusText" class="text-xs text-indigo-200 font-medium mt-1">सुरक्षित कनेक्शन तैयार हो रहा है...</p>
+  </div>
+
+  <!-- ========================================================= -->
+  <!-- 2. APP-ONLY SECURITY GATE (BLOCKS BROWSER WHEN ENABLED)   -->
+  <!-- ========================================================= -->
+  <div id="appOnlySecurityGate" class="hidden fixed inset-0 z-[99990] bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-5 text-center text-white">
+    <div class="max-w-sm w-full bg-slate-900 border border-indigo-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+      <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" alt="Logo" class="w-16 h-16 mx-auto rounded-full bg-white p-1 border-2 border-amber-400" />
+      <div class="inline-flex items-center gap-1.5 bg-rose-500/20 border border-rose-400/40 text-rose-300 text-[10px] font-black px-3 py-1 rounded-full uppercase">
+        <i class="fa-solid fa-shield-halved"></i> Anti-Piracy Protection Active
+      </div>
+      <h2 class="text-lg font-extrabold text-white">यह कंटेंट सिर्फ ऑफिशियल ऐप में खुलेगा</h2>
+      <p class="text-xs text-slate-300 leading-relaxed">
+        वीडियो, नोट्स और पेड कोर्सेज की सुरक्षा के लिए ब्राउज़र एक्सेस बंद है। कृपया <strong>GURUKUL ONLINE APP</strong> डाउनलोड करके लॉगिन करें।
+      </p>
+      <a id="appOnlyDownloadLink" href="#" target="_blank" class="w-full inline-flex items-center justify-center gap-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold py-3 px-4 rounded-xl text-xs shadow-lg">
+        <i class="fa-brands fa-android text-base"></i> Official Android App डाउनलोड करें
+      </a>
+      <button type="button" onclick="openModalById('helplineModal')" class="w-full bg-white/10 hover:bg-white/15 text-indigo-200 font-bold py-2.5 rounded-xl text-xs">
+        <i class="fa-solid fa-headset mr-1"></i> सहायता (Helpline)
+      </button>
+    </div>
+  </div>
+
+  <!-- ========================================================= -->
+  <!-- 3. TOAST NOTIFICATIONS & CUSTOM IN-APP DIALOG MODAL       -->
+  <!-- ========================================================= -->
+  <div id="appToastContainer" class="fixed top-4 right-3 left-3 sm:left-auto sm:w-80 z-[99950] flex flex-col gap-2 pointer-events-none"></div>
+
+  <div id="customDialogOverlay" class="hidden fixed inset-0 z-[99900] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200 modal-pop">
+      <div id="customDialogHeader" class="brand-gradient text-white p-4 flex items-center gap-3">
+        <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" class="w-10 h-10 rounded-full bg-white p-0.5 border border-amber-400" />
+        <div class="flex-1">
+          <h4 id="customDialogTitle" class="font-extrabold text-sm sm:text-base">GURUKUL ONLINE APP</h4>
+          <p class="text-[10px] text-indigo-200">Gurukul Senior Secondary School Dhankoli</p>
+        </div>
+        <i class="fa-solid fa-bell text-amber-300 text-lg"></i>
+      </div>
+      <div class="p-5 space-y-4">
+        <div id="customDialogMessage" class="text-xs sm:text-sm text-slate-700 font-semibold whitespace-pre-line leading-relaxed"></div>
+        <div id="customDialogInputWrap" class="hidden">
+          <input type="text" id="customDialogInput" class="ed-input w-full px-3.5 py-2.5 rounded-xl text-sm font-bold" />
+        </div>
+        <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
+          <button type="button" id="customDialogCancelBtn" class="hidden px-4 py-2 rounded-xl border border-slate-300 text-slate-600 font-bold text-xs">रद्द करें</button>
+          <button type="button" id="customDialogOkBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-5 py-2.5 rounded-xl text-xs shadow-md">ठीक है (OK)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================= -->
+  <!-- 4. AUTHENTICATION SCREEN (LOGIN & EMAIL OTP SIGNUP)       -->
+  <!-- ========================================================= -->
+  <section id="authScreenView" class="hidden min-h-screen flex flex-col justify-between hero-gradient text-white">
+    <div class="max-w-md w-full mx-auto px-4 pt-8 pb-6 flex-1 flex flex-col justify-center">
+      <!-- Brand Header -->
+      <div class="text-center mb-6 space-y-2">
+        <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" alt="Logo" class="w-16 h-16 mx-auto rounded-full bg-white p-1 border-2 border-amber-400 shadow-xl" />
+        <span class="inline-block bg-amber-400/20 border border-amber-400/40 text-amber-300 text-[10px] font-extrabold px-3 py-0.5 rounded-full uppercase">Live Classes • Notes • CBT Tests • Book Store</span>
+        <h1 class="text-2xl font-extrabold tracking-tight">GURUKUL ONLINE APP</h1>
+        <p class="text-xs text-indigo-200">Gurukul Senior Secondary School Dhankoli</p>
+      </div>
+
+      <!-- Auth Card -->
+      <div class="bg-white text-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl border border-white/20 space-y-4">
+        <!-- Switcher Tabs -->
+        <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-2xl">
+          <button type="button" id="authTabLoginBtn" onclick="switchAuthMode('LOGIN')" class="py-2.5 rounded-xl text-xs font-extrabold bg-indigo-600 text-white shadow">लॉगिन (Login)</button>
+          <button type="button" id="authTabSignupBtn" onclick="switchAuthMode('SIGNUP')" class="py-2.5 rounded-xl text-xs font-extrabold text-slate-600">नया अकाउंट (Sign Up)</button>
+        </div>
+
+        <!-- LOGIN FORM -->
+        <form id="loginFormBox" onsubmit="event.preventDefault(); handleUserLogin();" class="space-y-3.5">
+          <div>
+            <label class="block text-[11px] font-bold text-slate-600 mb-1">रजिस्टर्ड ईमेल (Email ID)</label>
+            <div class="relative">
+              <i class="fa-solid fa-envelope absolute left-3.5 top-3.5 text-slate-400 text-xs"></i>
+              <input type="email" id="loginEmailInput" required placeholder="student@gmail.com" class="ed-input w-full pl-9 pr-3.5 py-2.5 rounded-xl text-sm font-semibold" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-[11px] font-bold text-slate-600 mb-1">पासवर्ड (Password)</label>
+            <div class="relative">
+              <i class="fa-solid fa-lock absolute left-3.5 top-3.5 text-slate-400 text-xs"></i>
+              <input type="password" id="loginPassInput" required placeholder="••••••••" class="ed-input w-full pl-9 pr-10 py-2.5 rounded-xl text-sm font-semibold" />
+              <button type="button" onclick="togglePasswordVisibility('loginPassInput', this)" class="absolute right-3 top-2.5 text-slate-400 p-1"><i class="fa-solid fa-eye text-xs"></i></button>
+            </div>
+          </div>
+          <div class="flex justify-end">
+            <button type="button" onclick="handleForgotPassword()" class="text-[11px] font-bold text-indigo-600 hover:underline">पासवर्ड भूल गए? (Reset)</button>
+          </div>
+          <button type="submit" id="btnSubmitLogin" class="w-full brand-gradient text-white font-extrabold py-3 rounded-xl text-sm shadow-lg flex items-center justify-center gap-2">
+            <i class="fa-solid fa-right-to-bracket"></i> सुरक्षित लॉगिन करें
+          </button>
+        </form>
+
+        <!-- SIGNUP FORM (WITH EMAIL OTP VERIFICATION) -->
+        <form id="signupFormBox" onsubmit="event.preventDefault(); handleStudentSignup();" class="hidden space-y-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div>
+              <label class="block text-[11px] font-bold text-slate-600 mb-1">पूरा नाम *</label>
+              <input type="text" id="regNameInput" required placeholder="आपका नाम" class="ed-input w-full px-3 py-2 rounded-xl text-xs font-semibold" />
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold text-slate-600 mb-1">मोबाइल नंबर (10 अंक) *</label>
+              <input type="tel" id="regPhoneInput" required maxlength="10" placeholder="9876543210" class="ed-input w-full px-3 py-2 rounded-xl text-xs font-semibold" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-[11px] font-bold text-slate-600 mb-1">टारगेट क्लास / परीक्षा *</label>
+            <select id="regTargetSelect" class="ed-input w-full px-3 py-2 rounded-xl text-xs font-bold">
+              <option value="Class 6-8">Class 6-8</option>
+              <option value="Class 9-10">Class 9-10</option>
+              <option value="Class 11-12 Science">Class 11-12 Science</option>
+              <option value="Class 11-12 Arts">Class 11-12 Arts</option>
+              <option value="Class 11-12 Commerce">Class 11-12 Commerce</option>
+              <option value="Class 11-12 Agriculture">Class 11-12 Agriculture</option>
+              <option value="Rajasthan CET">Rajasthan CET (10+2 / Graduation)</option>
+              <option value="RRB / SSC / Govt Exams">RRB / SSC / Govt Exams</option>
+              <option value="Scholarship & Foundation">Scholarship & Foundation</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-bold text-slate-600 mb-1">ईमेल आईडी (OTP वेरिफिकेशन अनिवार्य) *</label>
+            <div class="flex gap-2">
+              <input type="email" id="regEmailInput" required placeholder="student@gmail.com" class="ed-input flex-1 px-3 py-2 rounded-xl text-xs font-semibold" />
+              <button type="button" id="btnSendSignupOtp" onclick="sendSignupEmailOTP()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-3 py-2 rounded-xl text-[11px] shrink-0 shadow">OTP भेजें</button>
+            </div>
+          </div>
+          <div id="regOtpVerifyWrap" class="hidden bg-indigo-50 border border-indigo-200 p-2.5 rounded-xl space-y-2">
+            <div class="flex gap-2 items-center">
+              <input type="text" id="regOtpInput" maxlength="6" placeholder="6-अंकों का OTP डालें" class="ed-input flex-1 px-3 py-2 rounded-xl text-xs font-extrabold text-center tracking-widest bg-white" />
+              <button type="button" id="btnVerifySignupOtp" onclick="verifySignupEmailOTP()" class="bg-emerald-600 text-white font-extrabold px-3.5 py-2 rounded-xl text-xs">वेरीफाई करें</button>
+            </div>
+            <p id="regOtpStatusText" class="text-[10px] font-bold text-indigo-800">आपकी ईमेल पर 6-अंकों का OTP भेजा गया है।</p>
+          </div>
+          <div>
+            <label class="block text-[11px] font-bold text-slate-600 mb-1">नया पासवर्ड (कम से कम 6 अक्षर) *</label>
+            <input type="password" id="regPassInput" required minlength="6" placeholder="मजबूत पासवर्ड बनाएं" class="ed-input w-full px-3 py-2 rounded-xl text-xs font-semibold" />
+          </div>
+          <button type="submit" id="btnSubmitSignup" class="w-full emerald-gradient text-white font-extrabold py-3 rounded-xl text-sm shadow-lg flex items-center justify-center gap-2">
+            <i class="fa-solid fa-user-plus"></i> अकाउंट बनाएं और शुरू करें
+          </button>
+        </form>
+      </div>
+
+      <!-- Footer Support -->
+      <div class="text-center mt-5 space-y-1.5">
+        <button type="button" onclick="openModalById('helplineModal')" class="inline-flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-4 py-2 rounded-full text-xs font-bold text-amber-300">
+          <i class="fa-solid fa-phone-volume"></i> 24x7 Helpline: 9772564359, 9887071127
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================= -->
+  <!-- 5. STUDENT MAIN EDTECH APP SHELL                          -->
+  <!-- ========================================================= -->
+  <div id="studentAppShell" class="hidden min-h-screen flex flex-col">
+
+    <!-- Top Glass Bar -->
+    <header class="app-topbar sticky top-0 z-40">
+      <div class="max-w-5xl mx-auto px-3 sm:px-5 py-2.5 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" alt="Logo" class="w-9 h-9 rounded-full bg-white p-0.5 border-2 border-indigo-500 shrink-0" />
+          <div class="truncate">
+            <h1 class="font-extrabold text-sm sm:text-base leading-tight truncate">GURUKUL ONLINE</h1>
+            <p id="topbarUserGreeting" class="text-[10px] text-slate-500 font-semibold truncate">नमस्ते, Student</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button type="button" onclick="toggleAppTheme()" class="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-sm" title="Dark / Light Mode">
+            <i id="themeToggleIcon" class="fa-solid fa-moon text-indigo-200 text-sm"></i>
+          </button>
+          <button type="button" onclick="openBookCartModal()" class="relative w-9 h-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold" title="Book Cart">
+            <i class="fa-solid fa-cart-shopping text-sm"></i>
+            <span id="headerCartBadge" class="hidden absolute -top-1 -right-1 bg-rose-600 text-white text-[9px] font-black min-w-[17px] h-[17px] px-1 rounded-full flex items-center justify-center">0</span>
+          </button>
+          <button type="button" onclick="openNotificationsModal()" class="relative w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold" title="Notifications">
+            <i class="fa-solid fa-bell text-sm"></i>
+            <span id="headerNotifBadge" class="hidden absolute -top-1 -right-1 bg-rose-600 text-white text-[9px] font-black min-w-[17px] h-[17px] px-1 rounded-full flex items-center justify-center">0</span>
+          </button>
+          <button type="button" onclick="openModalById('helplineModal')" class="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold" title="Helpline">
+            <i class="fa-solid fa-headset text-sm"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Dynamic Content Container -->
+    <main class="flex-1 max-w-5xl w-full mx-auto px-3 sm:px-5 pt-4 app-main-pad">
+
+      <!-- TAB 1: HOME -->
+      <section id="tabView_home" class="student-tab-pane space-y-5">
+        <!-- Announcement Bar -->
+        <div class="announcement-bar rounded-2xl px-3.5 py-2.5 flex items-center gap-2.5">
+          <span class="bg-indigo-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase shrink-0">NEW</span>
+          <p id="homeAnnouncementText" class="text-xs font-bold text-indigo-900 dark:text-indigo-200 line-clamp-1">GURUKUL ONLINE APP में आपका स्वागत है!</p>
+        </div>
+
+        <!-- Promo Banner Slider -->
+        <div id="homeBannerTrack" class="banner-track no-scrollbar"></div>
+
+        <!-- Quick Action Shortcuts -->
+        <div class="grid grid-cols-4 gap-2.5">
+          <button type="button" onclick="switchStudentTab('batches', 'FREE')" class="ed-card ed-card-hover p-3 rounded-2xl flex flex-col items-center gap-1.5 text-center">
+            <div class="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-base"><i class="fa-solid fa-circle-play"></i></div>
+            <span class="text-[10px] sm:text-xs font-extrabold leading-tight">Free Classes</span>
+          </button>
+          <button type="button" onclick="switchStudentTab('mystudy', 'tests')" class="ed-card ed-card-hover p-3 rounded-2xl flex flex-col items-center gap-1.5 text-center">
+            <div class="w-10 h-10 rounded-xl bg-pink-100 text-pink-700 flex items-center justify-center text-base"><i class="fa-solid fa-laptop-code"></i></div>
+            <span class="text-[10px] sm:text-xs font-extrabold leading-tight">CBT Tests</span>
+          </button>
+          <button type="button" onclick="switchStudentTab('mystudy', 'doubts')" class="ed-card ed-card-hover p-3 rounded-2xl flex flex-col items-center gap-1.5 text-center">
+            <div class="w-10 h-10 rounded-xl bg-violet-100 text-violet-700 flex items-center justify-center text-base"><i class="fa-solid fa-comments"></i></div>
+            <span class="text-[10px] sm:text-xs font-extrabold leading-tight">Ask Doubt</span>
+          </button>
+          <button type="button" onclick="switchStudentTab('bookstore')" class="ed-card ed-card-hover p-3 rounded-2xl flex flex-col items-center gap-1.5 text-center">
+            <div class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center text-base"><i class="fa-solid fa-book"></i></div>
+            <span class="text-[10px] sm:text-xs font-extrabold leading-tight">Book Store</span>
+          </button>
+        </div>
+
+        <!-- Pending Payment Zero-Panic Live Reminder (Shows only when student has pending payment) -->
+        <div id="homePendingOrderBanner" class="hidden"></div>
+
+        <!-- Featured / Popular Batches -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm sm:text-base font-extrabold flex items-center gap-2"><i class="fa-solid fa-fire text-amber-500"></i> टॉप ऑनलाइन बैचेस</h2>
+            <button type="button" onclick="switchStudentTab('batches')" class="text-xs font-extrabold text-indigo-600">सभी देखें <i class="fa-solid fa-chevron-right text-[10px]"></i></button>
+          </div>
+          <div id="homeFeaturedBatches" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5"></div>
+        </div>
+
+        <!-- Free Daily Tests / Quizzes -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm sm:text-base font-extrabold flex items-center gap-2"><i class="fa-solid fa-bolt text-pink-600"></i> फ्री ऑनलाइन टेस्ट व प्रैक्टिस</h2>
+            <button type="button" onclick="switchStudentTab('mystudy', 'tests')" class="text-xs font-extrabold text-indigo-600">सभी टेस्ट</button>
+          </div>
+          <div id="homeFreeTests" class="grid sm:grid-cols-2 gap-3"></div>
+        </div>
+      </section>
+
+      <!-- TAB 2: ALL BATCHES / COURSES -->
+      <section id="tabView_batches" class="student-tab-pane hidden space-y-4">
+        <div class="flex flex-col sm:flex-row gap-2.5">
+          <div class="relative flex-1">
+            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-xs"></i>
+            <input type="text" id="batchSearchInput" oninput="renderAllBatchesGrid()" placeholder="कोर्स, क्लास या परीक्षा खोजें..." class="ed-input w-full pl-9 pr-3 py-2.5 rounded-2xl text-xs font-semibold" />
+          </div>
+          <select id="batchPriceFilter" onchange="renderAllBatchesGrid()" class="ed-input px-3 py-2.5 rounded-2xl text-xs font-extrabold">
+            <option value="ALL">सभी बैच (Free + Paid)</option>
+            <option value="PAID">केवल Paid बैच</option>
+            <option value="FREE">केवल Free बैच</option>
+          </select>
+        </div>
+
+        <!-- Category Filter Chips -->
+        <div id="batchCategoryChips" class="flex gap-2 overflow-x-auto no-scrollbar pb-1"></div>
+
+        <!-- Batches Grid -->
+        <div id="allBatchesContainer" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5"></div>
+      </section>
+
+      <!-- TAB 3: MY STUDY HUB (BATCHES, TESTS, DOUBTS, BOOKMARKS, ORDERS) -->
+      <section id="tabView_mystudy" class="student-tab-pane hidden space-y-4">
+        <!-- Sub-Tab Navigation -->
+        <div class="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+          <button type="button" id="subTabBtn_batches" onclick="switchMyStudySubTab('batches')" class="category-chip active px-4 py-2 rounded-xl text-xs font-extrabold"><i class="fa-solid fa-graduation-cap mr-1"></i> मेरे बैच</button>
+          <button type="button" id="subTabBtn_tests" onclick="switchMyStudySubTab('tests')" class="category-chip px-4 py-2 rounded-xl text-xs font-extrabold"><i class="fa-solid fa-laptop-code mr-1"></i> CBT टेस्ट</button>
+          <button type="button" id="subTabBtn_doubts" onclick="switchMyStudySubTab('doubts')" class="category-chip px-4 py-2 rounded-xl text-xs font-extrabold"><i class="fa-solid fa-circle-question mr-1"></i> डाउट डेस्क</button>
+          <button type="button" id="subTabBtn_bookmarks" onclick="switchMyStudySubTab('bookmarks')" class="category-chip px-4 py-2 rounded-xl text-xs font-extrabold"><i class="fa-solid fa-bookmark mr-1"></i> बुकमार्क्स</button>
+          <button type="button" id="subTabBtn_orders" onclick="switchMyStudySubTab('orders')" class="category-chip px-4 py-2 rounded-xl text-xs font-extrabold"><i class="fa-solid fa-receipt mr-1"></i> पेमेंट व ऑर्डर्स</button>
+        </div>
+
+        <div id="myStudyPane_batches" class="mystudy-subpane space-y-3">
+          <div id="myEnrolledBatchesBox" class="grid sm:grid-cols-2 gap-3.5"></div>
+        </div>
+        <div id="myStudyPane_tests" class="mystudy-subpane hidden space-y-3">
+          <div id="myTestsBox" class="grid sm:grid-cols-2 gap-3"></div>
+        </div>
+        <div id="myStudyPane_doubts" class="mystudy-subpane hidden space-y-4">
+          <div class="ed-card p-4 rounded-2xl space-y-3">
+            <h3 class="text-sm font-extrabold flex items-center gap-2"><i class="fa-solid fa-paper-plane text-indigo-600"></i> नया डाउट पूछें (टेक्स्ट या सवाल की फोटो)</h3>
+            <div class="grid sm:grid-cols-2 gap-2.5">
+              <input type="text" id="doubtSubjectInput" placeholder="विषय (जैसे: Physics, Maths, Rajasthan GK)" class="ed-input px-3 py-2 rounded-xl text-xs font-semibold" />
+              <input type="file" id="doubtPhotoInput" accept="image/*" class="ed-input px-3 py-1.5 rounded-xl text-xs" />
+            </div>
+            <textarea id="doubtQuestionInput" rows="2" placeholder="अपना सवाल विस्तार से लिखें..." class="ed-input w-full px-3 py-2 rounded-xl text-xs font-semibold"></textarea>
+            <button type="button" id="btnSubmitDoubt" onclick="submitStudentDoubt()" class="brand-gradient text-white font-extrabold px-5 py-2.5 rounded-xl text-xs shadow">डाउट सबमिट करें</button>
+          </div>
+          <div id="myDoubtsBox" class="space-y-3"></div>
+        </div>
+        <div id="myStudyPane_bookmarks" class="mystudy-subpane hidden space-y-3">
+          <div id="myBookmarksBox" class="space-y-2.5"></div>
+        </div>
+        <div id="myStudyPane_orders" class="mystudy-subpane hidden space-y-3">
+          <div id="myOrdersTrackerBox" class="space-y-3"></div>
+        </div>
+      </section>
+
+      <!-- TAB 4: OFFLINE BOOK STORE (ONLINE PAYMENT ONLY / NO COD) -->
+      <section id="tabView_bookstore" class="student-tab-pane hidden space-y-4">
+        <div class="hero-gradient text-white p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-lg">
+          <div>
+            <span class="bg-amber-400 text-slate-950 text-[9px] font-black px-2.5 py-0.5 rounded-full uppercase">100% Genuine Printed Books</span>
+            <h2 class="text-base sm:text-lg font-extrabold mt-1">Gurukul Official Book Store</h2>
+            <p class="text-[11px] text-indigo-200">होम डिलीवरी पूरे राजस्थान व भारत में • केवल सुरक्षित ऑनलाइन पेमेंट (No COD)</p>
+          </div>
+          <button type="button" onclick="openBookCartModal()" class="bg-amber-400 text-slate-950 font-extrabold px-4 py-2.5 rounded-xl text-xs shadow flex items-center gap-1.5">
+            <i class="fa-solid fa-cart-shopping"></i> कार्ट देखें (<span id="storeCartCountBtn">0</span>)
+          </button>
+        </div>
+
+        <div class="relative">
+          <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-xs"></i>
+          <input type="text" id="bookSearchInput" oninput="renderBookStoreGrid()" placeholder="किताब का नाम, विषय या क्लास खोजें..." class="ed-input w-full pl-9 pr-3 py-2.5 rounded-2xl text-xs font-semibold" />
+        </div>
+
+        <div id="bookStoreGrid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div>
+      </section>
+
+      <!-- TAB 5: STUDENT PROFILE -->
+      <section id="tabView_profile" class="student-tab-pane hidden space-y-4">
+        <div class="hero-gradient text-white p-5 rounded-3xl shadow-xl flex items-center gap-4">
+          <div id="profileAvatarCircle" class="w-16 h-16 rounded-2xl bg-amber-400 text-slate-950 font-black text-2xl flex items-center justify-center shadow-lg shrink-0">S</div>
+          <div class="min-w-0 flex-1">
+            <span id="profileStudentIdBadge" class="bg-white/20 text-amber-300 text-[10px] font-black px-2.5 py-0.5 rounded-full">ID: GURUKUL</span>
+            <h2 id="profileNameText" class="text-lg font-extrabold truncate mt-1">Student Name</h2>
+            <p id="profileEmailPhoneText" class="text-xs text-indigo-200 truncate">email@gmail.com</p>
+            <p id="profileTargetText" class="text-[11px] text-amber-200 font-semibold mt-0.5">Target: -</p>
+          </div>
+        </div>
+
+        <div class="ed-card rounded-2xl divide-y divide-slate-100 overflow-hidden text-xs font-bold">
+          <button type="button" onclick="switchStudentTab('mystudy', 'orders')" class="w-full p-4 flex items-center justify-between hover:bg-slate-50">
+            <span class="flex items-center gap-3"><i class="fa-solid fa-receipt text-indigo-600 text-base w-5"></i> मेरे पेमेंट्स, रसीद और बुक ऑर्डर ट्रैकिंग</span>
+            <i class="fa-solid fa-chevron-right text-slate-400"></i>
+          </button>
+          <button type="button" onclick="enableAppPushNotifications(true)" class="w-full p-4 flex items-center justify-between hover:bg-slate-50">
+            <span class="flex items-center gap-3"><i class="fa-solid fa-bell text-amber-500 text-base w-5"></i> बैकग्राउंड पुश नोटिफिकेशन चालू करें</span>
+            <span id="profilePushStatus" class="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Enable</span>
+          </button>
+          <button type="button" onclick="handleForgotPassword(true)" class="w-full p-4 flex items-center justify-between hover:bg-slate-50">
+            <span class="flex items-center gap-3"><i class="fa-solid fa-key text-emerald-600 text-base w-5"></i> पासवर्ड बदलें (Email Reset Link)</span>
+            <i class="fa-solid fa-chevron-right text-slate-400"></i>
+          </button>
+          <button type="button" onclick="openModalById('helplineModal')" class="w-full p-4 flex items-center justify-between hover:bg-slate-50">
+            <span class="flex items-center gap-3"><i class="fa-brands fa-whatsapp text-emerald-500 text-base w-5"></i> 24x7 सपोर्ट और WhatsApp हेल्पलाइन</span>
+            <i class="fa-solid fa-chevron-right text-slate-400"></i>
+          </button>
+          <div class="p-4 flex items-center justify-between text-[11px] text-slate-500">
+            <span><i class="fa-solid fa-mobile-screen mr-1.5"></i> सिंगल-डिवाइस सिक्योरिटी ID</span>
+            <code id="profileDeviceIdText" class="font-mono font-bold text-slate-700">-</code>
+          </div>
+        </div>
+
+        <button type="button" onclick="handleUserLogout()" class="w-full bg-rose-600 hover:bg-rose-700 text-white font-extrabold py-3.5 rounded-2xl text-xs shadow-lg flex items-center justify-center gap-2">
+          <i class="fa-solid fa-power-off"></i> सुरक्षित लॉगआउट करें (Logout)
+        </button>
+      </section>
+    </main>
+
+    <!-- 5-Tab Bottom Navigation Bar -->
+    <nav class="bottom-nav">
+      <div class="max-w-5xl mx-auto grid grid-cols-5">
+        <button type="button" id="bnav_home" onclick="switchStudentTab('home')" class="bottom-nav-btn active">
+          <div class="nav-icon-wrap"><i class="fa-solid fa-house"></i></div>
+          <span>Home</span>
+        </button>
+        <button type="button" id="bnav_batches" onclick="switchStudentTab('batches')" class="bottom-nav-btn">
+          <div class="nav-icon-wrap"><i class="fa-solid fa-layer-group"></i></div>
+          <span>Batches</span>
+        </button>
+        <button type="button" id="bnav_mystudy" onclick="switchStudentTab('mystudy')" class="bottom-nav-btn">
+          <div class="nav-icon-wrap"><i class="fa-solid fa-book-open-reader"></i></div>
+          <span>My Study</span>
+        </button>
+        <button type="button" id="bnav_bookstore" onclick="switchStudentTab('bookstore')" class="bottom-nav-btn">
+          <div class="nav-icon-wrap"><i class="fa-solid fa-store"></i></div>
+          <span>Books</span>
+        </button>
+        <button type="button" id="bnav_profile" onclick="switchStudentTab('profile')" class="bottom-nav-btn">
+          <div class="nav-icon-wrap"><i class="fa-solid fa-user"></i></div>
+          <span>Profile</span>
+        </button>
+      </div>
+    </nav>
+  </div>
+
+  <!-- ========================================================= -->
+  <!-- 6. ADMIN MASTER CONTROL PANEL SHELL                       -->
+  <!-- ========================================================= -->
+  <div id="adminAppShell" class="hidden min-h-screen flex flex-col">
+    <header class="brand-gradient text-white sticky top-0 z-40 shadow-lg">
+      <div class="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2.5">
+          <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" class="w-10 h-10 rounded-full bg-white p-0.5 border-2 border-amber-400" />
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="font-extrabold text-sm sm:text-base">GURUKUL ONLINE — ADMIN MASTER</h1>
+              <span class="bg-emerald-400 text-slate-950 text-[9px] font-black px-2 py-0.5 rounded-full">UID LOCKED</span>
+            </div>
+            <p class="text-[10px] text-indigo-200">Courses • Payments • Live UPI • Book Store • Push Alerts</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button type="button" onclick="adminCheckEmailQuotaUI()" class="bg-white/15 hover:bg-white/25 px-2.5 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1">
+            <i class="fa-solid fa-envelope-circle-check text-amber-300"></i> <span id="adminEmailQuotaLabel">Email Quota</span>
+          </button>
+          <button type="button" onclick="toggleAppTheme()" class="bg-white/15 hover:bg-white/25 w-8 h-8 rounded-xl flex items-center justify-center"><i class="fa-solid fa-circle-half-stroke"></i></button>
+          <button type="button" onclick="handleUserLogout()" class="bg-rose-600 hover:bg-rose-700 px-3 py-1.5 rounded-xl text-xs font-extrabold shadow flex items-center gap-1">
+            <i class="fa-solid fa-power-off"></i> <span class="hidden sm:inline">Logout</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 py-4 space-y-4">
+      <!-- Live KPI Summary Cards -->
+      <div id="adminStatsGrid" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div class="ed-card p-4 rounded-2xl">
+          <div class="text-[11px] font-bold text-slate-500">कुल कमाई (Approved Revenue)</div>
+          <div id="statAdminRevenue" class="text-xl font-black text-emerald-600 mt-1">₹0</div>
+        </div>
+        <div class="ed-card p-4 rounded-2xl">
+          <div class="text-[11px] font-bold text-slate-500">कुल रजिस्टर्ड छात्र</div>
+          <div id="statAdminStudents" class="text-xl font-black text-indigo-600 mt-1">0</div>
+        </div>
+        <div class="ed-card p-4 rounded-2xl">
+          <div class="text-[11px] font-bold text-slate-500">पेंडिंग पेमेंट अप्रूवल</div>
+          <div id="statAdminPendingPay" class="text-xl font-black text-rose-600 mt-1">0</div>
+        </div>
+        <div class="ed-card p-4 rounded-2xl">
+          <div class="text-[11px] font-bold text-slate-500">एक्टिव कोर्सेज / किताबें</div>
+          <div id="statAdminCatalog" class="text-xl font-black text-amber-600 mt-1">0 / 0</div>
+        </div>
+      </div>
+
+      <!-- Admin Navigation Grid -->
+      <div class="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+        <button type="button" id="admTabBtn_payments" onclick="switchAdminTab('payments')" class="admin-tab-btn active-admin-tab px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-indian-rupee-sign text-emerald-600"></i> 1. पेमेंट्स व अप्रूवल</button>
+        <button type="button" id="admTabBtn_batches" onclick="switchAdminTab('batches')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-layer-group text-indigo-600"></i> 2. बैच व वीडियो/नोट्स</button>
+        <button type="button" id="admTabBtn_tests" onclick="switchAdminTab('tests')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-laptop-code text-pink-600"></i> 3. CBT टेस्ट सीरीज</button>
+        <button type="button" id="admTabBtn_books" onclick="switchAdminTab('books')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-book text-amber-600"></i> 4. बुक स्टोर व ऑर्डर</button>
+        <button type="button" id="admTabBtn_students" onclick="switchAdminTab('students')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-users text-blue-600"></i> 5. छात्र व एक्सेस</button>
+        <button type="button" id="admTabBtn_doubts" onclick="switchAdminTab('doubts')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-comments text-violet-600"></i> 6. डाउट डेस्क</button>
+        <button type="button" id="admTabBtn_marketing" onclick="switchAdminTab('marketing')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-bullhorn text-rose-600"></i> 7. कूपन, बैनर व Push</button>
+        <button type="button" id="admTabBtn_settings" onclick="switchAdminTab('settings')" class="admin-tab-btn px-3.5 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5"><i class="fa-solid fa-sliders text-slate-600"></i> 8. Live UPI व सिक्योरिटी</button>
+      </div>
+
+      <!-- Dynamic Admin Tab Content Container (Populated by js/admin.js) -->
+      <div id="adminWorkspaceContainer" class="space-y-4"></div>
+    </main>
+  </div>
+
+  <!-- ========================================================= -->
+  <!-- 7. INTERACTIVE MODALS (COURSE, CLASSROOM, PAYMENT, MEDIA) -->
+  <!-- ========================================================= -->
+
+  <!-- A. Batch Details & Coupon Modal -->
+  <div id="batchDetailModal" class="hidden fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-2xl w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="brand-gradient text-white px-5 py-3.5 flex items-center justify-between">
+        <h3 id="batchDetailModalTitle" class="font-extrabold text-sm sm:text-base truncate">Batch Details</h3>
+        <button type="button" onclick="closeModalById('batchDetailModal')" class="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="batchDetailModalBody" class="p-4 sm:p-5 max-h-[82vh] overflow-y-auto custom-scroll space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- B. Batch Classroom Modal (Subjects -> Chapters -> Video/Notes/eBooks/DPP) -->
+  <div id="batchClassroomModal" class="hidden fixed inset-0 z-[75] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-4xl w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="brand-gradient text-white px-5 py-3.5 flex items-center justify-between">
+        <div class="min-w-0">
+          <h3 id="classroomTitle" class="font-extrabold text-sm sm:text-base truncate">Smart Classroom</h3>
+          <p id="classroomMeta" class="text-[10px] text-indigo-200 truncate">Live & Recorded Classes • Notes • DPP • eBooks</p>
+        </div>
+        <button type="button" onclick="closeModalById('batchClassroomModal')" class="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="classroomBody" class="p-4 sm:p-5 max-h-[84vh] overflow-y-auto custom-scroll space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- C. Zero-Panic UPI Checkout & Payment Verification Modal -->
+  <div id="upiCheckoutModal" class="hidden fixed inset-0 z-[80] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="emerald-gradient text-white px-5 py-3.5 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <i class="fa-solid fa-shield-check text-amber-300 text-lg"></i>
+          <div>
+            <h3 id="checkoutModalTitle" class="font-extrabold text-sm sm:text-base">100% सुरक्षित UPI पेमेंट (0% फीस)</h3>
+            <p class="text-[10px] text-emerald-100">तुरंत रसीद + ईमेल प्रूफ + 24x7 हेल्पलाइन गारंटी</p>
+          </div>
+        </div>
+        <button type="button" onclick="closeModalById('upiCheckoutModal')" class="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="upiCheckoutModalBody" class="p-4 sm:p-5 max-h-[84vh] overflow-y-auto custom-scroll space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- D. Protected Custom Video Player Modal (With Moving Watermark & Live Chat) -->
+  <div id="protectedVideoModal" class="hidden fixed inset-0 z-[90] bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div id="protectedVideoCard" class="protected-media-zone bg-slate-900 text-white rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl border border-slate-700 my-auto modal-pop">
+      <!-- Top Video Header -->
+      <div class="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <h4 id="playerVideoTitle" class="font-extrabold text-xs sm:text-sm text-amber-300 truncate">Class Lecture</h4>
+          <p id="playerVideoSub" class="text-[10px] text-slate-400 truncate">GURUKUL ONLINE APP • Protected Stream</p>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button type="button" id="btnBookmarkVideo" onclick="toggleCurrentVideoBookmark()" class="bg-white/10 hover:bg-white/20 px-2.5 py-1.5 rounded-lg text-[11px] font-bold"><i class="fa-regular fa-bookmark"></i></button>
+          <button type="button" onclick="toggleVideoLiveChat()" class="bg-indigo-600 hover:bg-indigo-500 px-2.5 py-1.5 rounded-lg text-[11px] font-bold"><i class="fa-solid fa-comments mr-1"></i>Chat</button>
+          <button type="button" onclick="closeProtectedVideoPlayer()" class="w-8 h-8 rounded-lg bg-rose-600 hover:bg-rose-700 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+      </div>
+
+      <!-- Protected Video Stage -->
+      <div class="video-stage">
+        <div id="ytPlayerMount" class="w-full h-full"></div>
+        <div id="videoClickShield" class="video-click-shield" onclick="toggleCustomVideoPlayPause()"></div>
+        <div id="videoDynamicWatermark" class="dynamic-watermark" style="top:14%;left:10%;">GURUKUL ONLINE</div>
+      </div>
+
+      <!-- Custom Video Controls -->
+      <div class="custom-video-controls space-y-2">
+        <div class="flex items-center gap-2.5">
+          <span id="playerCurrentTime" class="text-[10px] font-mono text-slate-300 w-10">00:00</span>
+          <input type="range" id="playerSeekSlider" min="0" max="100" value="0" oninput="seekCustomVideo(this.value)" class="video-progress-slider flex-1" />
+          <span id="playerDurationTime" class="text-[10px] font-mono text-slate-300 w-10 text-right">00:00</span>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="skipCustomVideo(-10)" class="bg-white/10 hover:bg-white/20 px-2.5 py-1.5 rounded-lg text-xs font-bold"><i class="fa-solid fa-rotate-left"></i> 10s</button>
+            <button type="button" id="btnCustomPlayPause" onclick="toggleCustomVideoPlayPause()" class="bg-amber-400 text-slate-950 px-4 py-1.5 rounded-lg text-xs font-black shadow"><i class="fa-solid fa-play"></i></button>
+            <button type="button" onclick="skipCustomVideo(10)" class="bg-white/10 hover:bg-white/20 px-2.5 py-1.5 rounded-lg text-xs font-bold">10s <i class="fa-solid fa-rotate-right"></i></button>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="playerSpeedSelect" onchange="changeCustomVideoSpeed(this.value)" class="bg-slate-800 border border-slate-700 text-white rounded-lg px-2 py-1 text-xs font-bold">
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="1.75">1.75x</option>
+              <option value="2">2.0x</option>
+            </select>
+            <button type="button" onclick="toggleCustomVideoFullscreen()" class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg text-xs font-bold"><i class="fa-solid fa-expand"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Class Chat Panel -->
+      <div id="videoLiveChatPanel" class="hidden bg-slate-950 border-t border-slate-800 p-3 space-y-2">
+        <div id="videoLiveChatMessages" class="h-40 overflow-y-auto custom-scroll space-y-1.5 text-xs pr-1"></div>
+        <div class="flex gap-2">
+          <input type="text" id="videoLiveChatInput" onkeydown="if(event.key==='Enter') sendLiveChatMessage()" placeholder="क्लास में अपना सवाल या कमेंट लिखें..." class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500" />
+          <button type="button" onclick="sendLiveChatMessage()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold px-4 py-2 rounded-xl text-xs">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- E. Protected PDF.js Canvas Viewer Modal (No Download / Moving Watermark) -->
+  <div id="protectedPdfModal" class="hidden fixed inset-0 z-[92] bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-2 sm:p-4">
+    <div class="protected-media-zone bg-slate-900 text-white rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl border border-slate-700 modal-pop">
+      <div class="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+        <div class="min-w-0">
+          <h4 id="pdfViewerTitle" class="font-extrabold text-xs sm:text-sm text-amber-300 truncate">Protected Notes / eBook</h4>
+          <p id="pdfViewerPageInfo" class="text-[10px] text-slate-400">Loading pages...</p>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button type="button" onclick="adjustPdfZoom(-0.2)" class="bg-white/10 hover:bg-white/20 px-2.5 py-1.5 rounded-lg text-xs font-bold"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+          <button type="button" onclick="adjustPdfZoom(0.2)" class="bg-white/10 hover:bg-white/20 px-2.5 py-1.5 rounded-lg text-xs font-bold"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+          <button type="button" onclick="closeProtectedPdfViewer()" class="w-8 h-8 rounded-lg bg-rose-600 hover:bg-rose-700 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+      </div>
+      <div class="relative">
+        <div id="pdfCanvasContainer" class="pdf-viewer-canvas-wrap custom-scroll"></div>
+        <div id="pdfDynamicWatermark" class="dynamic-watermark pdf-watermark" style="top:25%;left:18%;">GURUKUL PROTECTED</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- F. CBT Online Test Runner & Result Modal -->
+  <div id="cbtRunnerModal" class="hidden fixed inset-0 z-[95] bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-4xl w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="brand-gradient text-white px-5 py-3.5 flex items-center justify-between">
+        <div>
+          <h3 id="cbtModalTitle" class="font-extrabold text-sm sm:text-base">Online CBT Test Series</h3>
+          <p id="cbtModalSub" class="text-[10px] text-indigo-200">Live Timer • Negative Marking • All-Student Rank & Solutions</p>
+        </div>
+        <button type="button" onclick="closeCBTRunnerModal()" class="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="cbtRunnerBody" class="p-4 sm:p-5 max-h-[84vh] overflow-y-auto custom-scroll space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- G. Book Detail & Shopping Cart Modals -->
+  <div id="bookDetailModal" class="hidden fixed inset-0 z-[76] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="brand-gradient text-white px-5 py-3.5 flex items-center justify-between">
+        <h3 class="font-extrabold text-sm">किताब की पूरी जानकारी</h3>
+        <button type="button" onclick="closeModalById('bookDetailModal')" class="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="bookDetailBody" class="p-4 sm:p-5 max-h-[82vh] overflow-y-auto custom-scroll space-y-4"></div>
+    </div>
+  </div>
+
+  <div id="bookCartModal" class="hidden fixed inset-0 z-[78] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-xl w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="gold-gradient text-slate-950 px-5 py-3.5 flex items-center justify-between">
+        <h3 class="font-extrabold text-sm sm:text-base"><i class="fa-solid fa-cart-shopping mr-1.5"></i> आपका बुक कार्ट व डिलीवरी पता</h3>
+        <button type="button" onclick="closeModalById('bookCartModal')" class="w-8 h-8 rounded-lg bg-black/10 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="bookCartBody" class="p-4 sm:p-5 max-h-[84vh] overflow-y-auto custom-scroll space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- H. Notifications Center Modal -->
+  <div id="notificationsModal" class="hidden fixed inset-0 z-[82] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
+    <div class="bg-white rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl my-auto modal-pop">
+      <div class="brand-gradient text-white px-5 py-3.5 flex items-center justify-between">
+        <h3 class="font-extrabold text-sm"><i class="fa-solid fa-bell text-amber-300 mr-1.5"></i> ऑफिशियल नोटिस व अलर्ट्स</h3>
+        <button type="button" onclick="closeModalById('notificationsModal')" class="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="notificationsListBody" class="p-4 max-h-[75vh] overflow-y-auto custom-scroll space-y-2.5"></div>
+    </div>
+  </div>
+
+  <!-- I. 24x7 Helpline Modal -->
+  <div id="helplineModal" class="hidden fixed inset-0 z-[96] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-md w-full overflow-hidden shadow-2xl modal-pop">
+      <div class="brand-gradient text-white p-4 text-center relative">
+        <img src="https://gsssdhankoli.github.io/Logo.png/logo.png" class="w-12 h-12 mx-auto rounded-full bg-white p-0.5 border border-amber-400 mb-1.5" />
+        <h3 class="font-extrabold text-base">24×7 Student Support Helpline</h3>
+        <p class="text-[11px] text-indigo-200">Gurukul Senior Secondary School Dhankoli</p>
+        <button type="button" onclick="closeModalById('helplineModal')" class="absolute top-3 right-3 w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="p-4 space-y-3">
+        <div class="p-3.5 rounded-2xl bg-slate-50 border flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-bold text-slate-500">हेल्पलाइन 1 (Payment & Course Help)</p>
+            <p class="text-sm font-extrabold">+91 9772564359</p>
+          </div>
+          <div class="flex gap-2">
+            <a href="tel:9772564359" class="bg-indigo-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold">Call</a>
+            <a href="https://wa.me/919772564359?text=Namaste%20Sir%2C%20mujhe%20GURUKUL%20ONLINE%20APP%20me%20help%20chahiye." target="_blank" class="bg-emerald-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold">WhatsApp</a>
+          </div>
+        </div>
+        <div class="p-3.5 rounded-2xl bg-slate-50 border flex items-center justify-between">
+          <div>
+            <p class="text-[11px] font-bold text-slate-500">हेल्पलाइन 2 (Book Store & General)</p>
+            <p class="text-sm font-extrabold">+91 9887071127</p>
+          </div>
+          <div class="flex gap-2">
+            <a href="tel:9887071127" class="bg-indigo-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold">Call</a>
+            <a href="https://wa.me/919887071127?text=Namaste%20Sir%2C%20mujhe%20GURUKUL%20ONLINE%20APP%20Book%20Store%20me%20help%20chahiye." target="_blank" class="bg-emerald-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold">WhatsApp</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden Clean Print Container (For Payment Receipts & Book Invoices) -->
+  <div id="pdfPrintWrapper" class="hidden">
+    <div id="pdfPrintArea"></div>
+  </div>
+
+  <!-- ========================================================= -->
+  <!-- 8. MODULAR APPLICATION SCRIPTS (EXACT LOAD ORDER)         -->
+  <!-- ========================================================= -->
+  <script src="./js/config.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="./js/courses.js"></script>
+  <script src="./js/player-pdf.js"></script>
+  <script src="./js/tests-doubts.js"></script>
+  <script src="./js/bookstore.js"></script>
+  <script src="./js/admin.js"></script>
+</body>
+</html>
