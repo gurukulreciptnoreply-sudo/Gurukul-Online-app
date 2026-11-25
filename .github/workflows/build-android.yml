@@ -1,0 +1,216 @@
+name: Build Secure Gurukul Online APK & AAB
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 3. Setup Java 17 (Android Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 4. Prepare Web Assets (www) & Capacitor 6
+        run: |
+          mkdir -p www
+          cp index.html manifest.json firebase-messaging-sw.js www/
+          cp -r css js www/
+
+          if [ ! -f package.json ]; then
+            cat << 'EOF' > package.json
+          {
+            "name": "gurukul-online-app",
+            "version": "1.0.0",
+            "private": true
+          }
+          EOF
+          fi
+
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npx cap add android
+          npx cap sync android
+
+      - name: 5. Inject Banking-Grade FLAG_SECURE in MainActivity.java
+        run: |
+          cat << 'EOF' > android/app/src/main/java/com/gurukul/onlineapp/MainActivity.java
+          package com.gurukul.onlineapp;
+
+          import android.os.Bundle;
+          import android.view.WindowManager;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  // Banking-App Level Native Screenshot, Screen Recording & Cast Protection
+                  getWindow().setFlags(
+                      WindowManager.LayoutParams.FLAG_SECURE,
+                      WindowManager.LayoutParams.FLAG_SECURE
+                  );
+              }
+          }
+          EOF
+
+      - name: 6. Harden AndroidManifest (UPI, WhatsApp, Notifications, No-Backup) & Auto VersionCode
+        env:
+          RUN_NUM: ${{ github.run_number }}
+        run: |
+          python3 - << 'EOF'
+          import os, re
+
+          manifest_path = "android/app/src/main/res/xml/config.xml"
+          am_path = "android/app/src/main/AndroidManifest.xml"
+
+          with open(am_path, "r", encoding="utf-8") as f:
+              xml = f.read()
+
+          # Disable ADB/Cloud Data Backup
+          if 'android:allowBackup="true"' in xml:
+              xml = xml.replace('android:allowBackup="true"', 'android:allowBackup="false"')
+          elif 'android:allowBackup=' not in xml:
+              xml = xml.replace('<application', '<application android:allowBackup="false"', 1)
+
+          # Add Android 13+ Notification Permission & Android 11+ UPI/WhatsApp/Call Queries
+          extra_block = """
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="upi" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="tel" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
+                  </intent>
+              </queries>
+          """
+          if "POST_NOTIFICATIONS" not in xml:
+              xml = xml.replace("<application", extra_block + "\n    <application", 1)
+
+          with open(am_path, "w", encoding="utf-8") as f:
+              f.write(xml)
+
+          # Increment versionCode automatically using GitHub Run Number
+          gradle_path = "android/app/build.gradle"
+          run_num = os.environ.get("RUN_NUM", "1")
+          with open(gradle_path, "r", encoding="utf-8") as f:
+              gradle = f.read()
+
+          gradle = re.sub(r'versionCode\s+\d+', f'versionCode {run_num}', gradle)
+          gradle = re.sub(r'versionName\s+"[^"]+"', f'versionName "1.0.{run_num}"', gradle)
+
+          with open(gradle_path, "w", encoding="utf-8") as f:
+              f.write(gradle)
+          EOF
+
+      - name: 7. Embed Official Gurukul School Logo as App Icon
+        run: |
+          if ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y imagemagick
+          fi
+
+          curl -fsSL "https://gsssdhankoli.github.io/Logo.png/logo.png" -o school_logo.png
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+
+          declare -A SIZES=(
+            ["mipmap-mdpi"]=48
+            ["mipmap-hdpi"]=72
+            ["mipmap-xhdpi"]=96
+            ["mipmap-xxhdpi"]=144
+            ["mipmap-xxxhdpi"]=192
+          )
+
+          for DIR in "${!SIZES[@]}"; do
+            SZ=${SIZES[$DIR]}
+            mkdir -p "android/app/src/main/res/$DIR"
+            convert school_logo.png -background white -alpha remove -alpha off -resize "${SZ}x${SZ}" -gravity center -extent "${SZ}x${SZ}" "android/app/src/main/res/$DIR/ic_launcher.png"
+            cp "android/app/src/main/res/$DIR/ic_launcher.png" "android/app/src/main/res/$DIR/ic_launcher_round.png"
+            cp "android/app/src/main/res/$DIR/ic_launcher.png" "android/app/src/main/res/$DIR/ic_launcher_foreground.png"
+          done
+
+      - name: 8. Build Release APK & Play Store AAB
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleRelease bundleRelease
+
+      - name: 9. Sign APK & AAB (Uses GitHub Secrets if set, else Auto-Sign)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.KEY_PASS }}
+        run: |
+          mkdir -p release-output
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            KS_PASS="$KEYSTORE_PASS"
+            K_ALIAS="$KEY_ALIAS"
+            K_PASS="$KEY_PASS"
+          else
+            KS_PASS="GurukulSecure2026"
+            K_ALIAS="gurukulkey"
+            K_PASS="GurukulSecure2026"
+            keytool -genkeypair -v \
+              -keystore release.keystore \
+              -alias "$K_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$K_PASS" \
+              -dname "CN=Gurukul Online App, OU=Education, O=Gurukul Sr Sec School Dhankoli, L=Dhankoli, S=Rajasthan, C=IN"
+          fi
+
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BUILD_TOOLS=$(ls -d "$SDK_DIR/build-tools/"* | sort -V | tail -n 1)
+
+          # Zipalign & Sign Release APK (v1+v2+v3 Schemes)
+          "$BUILD_TOOLS/zipalign" -v -p 4 \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            release-output/aligned.apk
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$K_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$K_PASS" \
+            --out release-output/GURUKUL-ONLINE-APP.apk \
+            release-output/aligned.apk
+
+          rm -f release-output/aligned.apk release-output/*.idsig
+
+          # Sign Play Store AAB Bundle
+          cp android/app/build/outputs/bundle/release/app-release.aab release-output/GURUKUL-ONLINE-APP.aab
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore release.keystore \
+            -storepass "$KS_PASS" \
+            -keypass "$K_PASS" \
+            release-output/GURUKUL-ONLINE-APP.aab "$K_ALIAS"
+
+      - name: 10. Upload Signed APK & AAB Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GURUKUL-ONLINE-APP-APK-AND-AAB
+          path: |
+            release-output/GURUKUL-ONLINE-APP.apk
+            release-output/GURUKUL-ONLINE-APP.aab
+          retention-days: 30
+          
