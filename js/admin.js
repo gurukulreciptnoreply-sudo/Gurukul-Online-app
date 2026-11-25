@@ -1405,3 +1405,618 @@ async function adminSaveSecurityAndAppSettings() {
   });
   showToast("सिक्योरिटी और ऐप सेटिंग सेव हो गई!", "SUCCESS");
 }
+/* =====================================================================
+   DROP-IN UPGRADE: BULK (||) UPLOAD, AUTO-SAVE DRAFT, IMAGE & EDIT TEST
+   (Paste at the very bottom of js/admin.js — No changes needed above)
+   ===================================================================== */
+(function () {
+  const DRAFT_KEY = "GURUKUL_ADMIN_CBT_DRAFT_V2";
+
+  function getDefaultMeta() {
+    const firstCat = (APP_CONFIG && Array.isArray(APP_CONFIG.categories))
+      ? (APP_CONFIG.categories.find((c) => c !== "All") || "All")
+      : "";
+    return {
+      editingTestId: null,
+      title: "",
+      batchId: "",
+      category: firstCat,
+      duration: 30,
+      plusMark: 4,
+      minusMark: 1
+    };
+  }
+
+  function loadSavedDraft() {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        ADMIN_STATE.draftTestMeta = { ...getDefaultMeta(), ...(parsed.meta || {}) };
+        ADMIN_STATE.draftTestQuestions = Array.isArray(parsed.questions) ? parsed.questions : [];
+        ADMIN_STATE.bulkRawText = parsed.bulkRawText || "";
+        return;
+      }
+    } catch (e) {}
+    ADMIN_STATE.draftTestMeta = getDefaultMeta();
+    ADMIN_STATE.bulkRawText = "";
+  }
+
+  function saveDraftLocal() {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        meta: ADMIN_STATE.draftTestMeta || getDefaultMeta(),
+        questions: ADMIN_STATE.draftTestQuestions || [],
+        bulkRawText: ADMIN_STATE.bulkRawText || ""
+      }));
+    } catch (e) {}
+  }
+
+  loadSavedDraft();
+  ADMIN_STATE.testInputMode = "bulk"; // "bulk" | "single"
+  ADMIN_STATE.editingQuestionIdx = -1;
+  ADMIN_STATE.bulkStripNumbering = true;
+
+  function normalizeCorrectOption(ansRaw, opts) {
+    const cleaned = String(ansRaw || "").trim();
+    if (!cleaned) return "";
+    const direct = cleaned.match(/^(?:ans(?:wer)?|option|opt|correct)?\s*[:\-\.\(\[]*\s*([A-D1-4])\s*[\)\.\]]*$/i);
+    if (direct) {
+      const ch = direct[1].toUpperCase();
+      if (ch === "1") return "A";
+      if (ch === "2") return "B";
+      if (ch === "3") return "C";
+      if (ch === "4") return "D";
+      return ch;
+    }
+    const low = cleaned.toLowerCase();
+    for (const k of ["A", "B", "C", "D"]) {
+      if ((opts[k] || "").trim().toLowerCase() === low) return k;
+    }
+    return "";
+  }
+
+  window.adminParsePipeBulk = function (rawText, stripNum = true) {
+    const valid = [];
+    const errors = [];
+    const trimmed = String(rawText || "").trim();
+    if (!trimmed) return { valid, errors };
+
+    // Auto JSON support agar user JSON paste ya upload kare
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        const json = JSON.parse(trimmed);
+        const arr = Array.isArray(json) ? json : (Array.isArray(json.questions) ? json.questions : null);
+        if (arr) {
+          arr.forEach((item, idx) => {
+            const q = String(item.q || item.question || "").trim();
+            const A = String(item.A || item.a || item.optA || "").trim();
+            const B = String(item.B || item.b || item.optB || "").trim();
+            const C = String(item.C || item.c || item.optC || "").trim();
+            const D = String(item.D || item.d || item.optD || "").trim();
+            const correct = normalizeCorrectOption(item.correct || item.ans || item.answer, { A, B, C, D });
+            if (!q || !A || !B || !C || !D || !correct) {
+              errors.push({ lineNo: idx + 1, reason: "JSON item mein question, A-D ya sahi answer missing hai" });
+            } else {
+              valid.push({
+                q, A, B, C, D, correct,
+                explanation: String(item.explanation || item.solution || item.exp || "").trim(),
+                imageUrl: String(item.imageUrl || item.image || "").trim()
+              });
+            }
+          });
+          return { valid, errors };
+        }
+      } catch (e) {}
+    }
+
+    // Standard || Separator Format
+    const lines = trimmed.split(/\r?\n/);
+    lines.forEach((rawLine, idx) => {
+      const lineNo = idx + 1;
+      const line = rawLine.trim();
+      if (!line) return;
+
+      const parts = line.split("||").map((p) => p.trim());
+      if (parts.length < 6) {
+        errors.push({
+          lineNo,
+          reason: `Sirf ${parts.length} parts mile (kam se kam 6 chahiye: Q || A || B || C || D || Ans)`
+        });
+        return;
+      }
+
+      let q = parts[0];
+      if (stripNum) {
+        q = q.replace(/^\s*(?:Q\.?\s*\d+|\d+\s*[\.\)])\s+/i, "").trim();
+      }
+      const A = parts[1];
+      const B = parts[2];
+      const C = parts[3];
+      const D = parts[4];
+      const correct = normalizeCorrectOption(parts[5], { A, B, C, D });
+      let explanation = parts[6] || "";
+      let imageUrl = parts[7] || "";
+
+      // Agar 7th part mein seedha image URL daal diya ho
+      if (!imageUrl && /^(https?:\/\/|data:image\/)/i.test(explanation)) {
+        imageUrl = explanation;
+        explanation = "";
+      }
+
+      if (!q || !A || !B || !C || !D) {
+        errors.push({ lineNo, reason: "Question ya kisi option (A/B/C/D) ka text khali hai" });
+        return;
+      }
+      if (!correct) {
+        errors.push({ lineNo, reason: `Invalid answer "${parts[5]}" (sirf A, B, C, D ya 1-4 likhein)` });
+        return;
+      }
+
+      valid.push({ q, A, B, C, D, correct, explanation, imageUrl });
+    });
+
+    return { valid, errors };
+  };
+
+  window.adminSyncTestMeta = function () {
+    const m = ADMIN_STATE.draftTestMeta || getDefaultMeta();
+    const tEl = document.getElementById("admTestTitle");
+    const bEl = document.getElementById("admTestBatch");
+    const cEl = document.getElementById("admTestCategory");
+    const dEl = document.getElementById("admTestDuration");
+    const pEl = document.getElementById("admTestPlus");
+    const nEl = document.getElementById("admTestMinus");
+
+    if (tEl) m.title = tEl.value;
+    if (bEl) m.batchId = bEl.value;
+    if (cEl) m.category = cEl.value;
+    if (dEl) m.duration = dEl.value === "" ? "" : Number(dEl.value);
+    if (pEl) m.plusMark = pEl.value === "" ? "" : Number(pEl.value);
+    if (nEl) m.minusMark = nEl.value === "" ? "" : Number(nEl.value);
+
+    ADMIN_STATE.draftTestMeta = m;
+    saveDraftLocal();
+  };
+
+  window.adminOnBulkTextInput = function (val) {
+    ADMIN_STATE.bulkRawText = val;
+    saveDraftLocal();
+    updateBulkLiveStatus();
+  };
+
+  function updateBulkLiveStatus() {
+    const box = document.getElementById("admBulkStatusBox");
+    if (!box) return;
+    const { valid, errors } = adminParsePipeBulk(ADMIN_STATE.bulkRawText, ADMIN_STATE.bulkStripNumbering);
+    if (!valid.length && !errors.length) {
+      box.innerHTML = `<span class="text-slate-500">Format: <code>Question || A || B || C || D || Ans || Explanation || ImageURL</code></span>`;
+      return;
+    }
+    const errHtml = errors.length
+      ? `<div class="mt-1.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 max-h-24 overflow-y-auto space-y-0.5 text-[10px]">
+           ${errors.map((e) => `<div><strong>Line ${e.lineNo}:</strong> ${escapeHtml(e.reason)}</div>`).join("")}
+         </div>`
+      : "";
+    box.innerHTML = `
+      <div class="flex flex-wrap items-center gap-2 font-extrabold text-[11px]">
+        <span class="text-emerald-700">✅ Valid: ${valid.length} sawal</span>
+        ${errors.length ? `<span class="text-rose-600">⚠️ Errors: ${errors.length} line</span>` : `<span class="text-indigo-600">Sabhi lines sahi hain!</span>`}
+      </div>
+      ${errHtml}
+    `;
+  }
+
+  window.adminInsertPipeSample = function () {
+    const sample = [
+      "राजस्थान की राजधानी कौन सी है? || जोधपुर || जयपुर || उदयपुर || अजमेर || B || जयपुर को पिंक सिटी भी कहते हैं।",
+      "भारत के संविधान को कब अंगीकृत किया गया? || 15 अगस्त 1947 || 26 जनवरी 1950 || 26 नवम्बर 1949 || 2 अक्टूबर 1948 || C || 26 नवम्बर 1949 को संविधान सभा द्वारा अपनाया गया।",
+      "सूर्य के सबसे निकट ग्रह कौन सा है? || शुक्र || बुध || मंगल || पृथ्वी || B"
+    ].join("\n");
+    const ta = document.getElementById("admBulkTextarea");
+    if (ta) {
+      ta.value = ta.value.trim() ? (ta.value.trim() + "\n" + sample) : sample;
+      adminOnBulkTextInput(ta.value);
+    }
+  };
+
+  window.adminHandleBulkFileUpload = function (inputEl) {
+    const file = inputEl && inputEl.files && inputEl.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function (ev) {
+      const content = String(ev.target.result || "");
+      const ta = document.getElementById("admBulkTextarea");
+      if (ta) ta.value = content;
+      adminOnBulkTextInput(content);
+      showToast(`"${file.name}" लोड हो गई! अब नीचे Import बटन दबाएं।`, "SUCCESS");
+    };
+    reader.readAsText(file, "UTF-8");
+    inputEl.value = "";
+  };
+
+  window.adminImportBulkQuestions = function () {
+    adminSyncTestMeta();
+    const { valid, errors } = adminParsePipeBulk(ADMIN_STATE.bulkRawText, ADMIN_STATE.bulkStripNumbering);
+    if (!valid.length) {
+      return showAppAlert(
+        errors.length
+          ? `कोई भी सही प्रश्न नहीं मिला।\nपहली त्रुटि (Line ${errors[0].lineNo}): ${errors[0].reason}`
+          : "कृपया बॉक्स में || फॉर्मेट में प्रश्न पेस्ट करें।",
+        "बल्क इम्पोर्ट त्रुटि",
+        "DANGER"
+      );
+    }
+
+    ADMIN_STATE.draftTestQuestions.push(...valid);
+    ADMIN_STATE.bulkRawText = "";
+    saveDraftLocal();
+    showToast(`${valid.length} प्रश्न लिस्ट में जुड़ गए!${errors.length ? ` (${errors.length} गलत लाइनें छोड़ी गईं)` : ""}`, "SUCCESS");
+    renderAdminWorkspace();
+  };
+
+  window.adminSwitchTestInputMode = function (mode) {
+    adminSyncTestMeta();
+    ADMIN_STATE.testInputMode = mode;
+    if (mode === "bulk") ADMIN_STATE.editingQuestionIdx = -1;
+    renderAdminWorkspace();
+  };
+
+  window.adminPushDraftQuestion = async function () {
+    adminSyncTestMeta();
+    const q = (document.getElementById("admQText")?.value || "").trim();
+    const A = (document.getElementById("admQA")?.value || "").trim();
+    const B = (document.getElementById("admQB")?.value || "").trim();
+    const C = (document.getElementById("admQC")?.value || "").trim();
+    const D = (document.getElementById("admQD")?.value || "").trim();
+    const correct = document.getElementById("admQCorrect")?.value || "A";
+    const explanation = (document.getElementById("admQExp")?.value || "").trim();
+    let imageUrl = (document.getElementById("admQImgUrl")?.value || "").trim();
+
+    const imgFileEl = document.getElementById("admQImgFile");
+    if (imgFileEl && imgFileEl.files && imgFileEl.files[0] && typeof compressImageToBase64 === "function") {
+      imageUrl = await compressImageToBase64(imgFileEl.files[0], 720, 0.75);
+    }
+
+    if (!q || !A || !B || !C || !D) {
+      return showAppAlert("कृपया प्रश्न और चारों विकल्प (A, B, C, D) भरें।", "अधूरा प्रश्न", "DANGER");
+    }
+
+    const qObj = { q, A, B, C, D, correct, explanation, imageUrl };
+    if (ADMIN_STATE.editingQuestionIdx >= 0 && ADMIN_STATE.draftTestQuestions[ADMIN_STATE.editingQuestionIdx]) {
+      ADMIN_STATE.draftTestQuestions[ADMIN_STATE.editingQuestionIdx] = qObj;
+      showToast(`प्रश्न #${ADMIN_STATE.editingQuestionIdx + 1} अपडेट हो गया!`, "SUCCESS");
+      ADMIN_STATE.editingQuestionIdx = -1;
+    } else {
+      ADMIN_STATE.draftTestQuestions.push(qObj);
+      showToast(`प्रश्न #${ADMIN_STATE.draftTestQuestions.length} जोड़ा गया!`, "SUCCESS");
+    }
+
+    saveDraftLocal();
+    renderAdminWorkspace();
+  };
+
+  window.adminEditDraftQuestion = function (idx) {
+    adminSyncTestMeta();
+    if (!ADMIN_STATE.draftTestQuestions[idx]) return;
+    ADMIN_STATE.testInputMode = "single";
+    ADMIN_STATE.editingQuestionIdx = idx;
+    renderAdminWorkspace();
+  };
+
+  window.adminMoveDraftQuestion = function (idx, dir) {
+    adminSyncTestMeta();
+    const target = idx + dir;
+    if (target < 0 || target >= ADMIN_STATE.draftTestQuestions.length) return;
+    const arr = ADMIN_STATE.draftTestQuestions;
+    [arr[idx], arr[target]] = [arr[target], arr[idx]];
+    saveDraftLocal();
+    renderAdminWorkspace();
+  };
+
+  window.adminRemoveDraftQuestion = function (idx) {
+    adminSyncTestMeta();
+    ADMIN_STATE.draftTestQuestions.splice(idx, 1);
+    if (ADMIN_STATE.editingQuestionIdx === idx) ADMIN_STATE.editingQuestionIdx = -1;
+    saveDraftLocal();
+    renderAdminWorkspace();
+  };
+
+  window.adminClearTestDraft = async function () {
+    const ok = await showAppConfirm("क्या आप पूरा ड्राफ्ट (टाइटल और सभी जुड़े प्रश्न) साफ करना चाहते हैं?", "ड्राफ्ट क्लियर करें");
+    if (!ok) return;
+    ADMIN_STATE.draftTestQuestions = [];
+    ADMIN_STATE.draftTestMeta = getDefaultMeta();
+    ADMIN_STATE.bulkRawText = "";
+    ADMIN_STATE.editingQuestionIdx = -1;
+    localStorage.removeItem(DRAFT_KEY);
+    showToast("ड्राफ्ट क्लियर हो गया।", "INFO");
+    renderAdminWorkspace();
+  };
+
+  window.adminExportDraftAsPipe = function () {
+    if (!ADMIN_STATE.draftTestQuestions.length) return showToast("कॉपी करने के लिए कोई प्रश्न नहीं है।", "WARNING");
+    const text = ADMIN_STATE.draftTestQuestions.map((dq) => {
+      const cols = [dq.q, dq.A, dq.B, dq.C, dq.D, dq.correct];
+      if (dq.explanation || dq.imageUrl) cols.push(dq.explanation || "");
+      if (dq.imageUrl) cols.push(dq.imageUrl);
+      return cols.join(" || ");
+    }).join("\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast("सभी प्रश्न || फॉर्मेट में कॉपी हो गए!", "SUCCESS"));
+    } else {
+      ADMIN_STATE.testInputMode = "bulk";
+      ADMIN_STATE.bulkRawText = text;
+      saveDraftLocal();
+      renderAdminWorkspace();
+      showToast("प्रश्न बल्क बॉक्स में आ गए हैं, वहां से कॉपी कर लें।", "INFO");
+    }
+  };
+
+  window.adminEditPublishedTest = async function (testId) {
+    const t = ADMIN_STATE.tests && ADMIN_STATE.tests[testId];
+    if (!t) return;
+    try {
+      const ansSnap = await db.ref(`testAnswers/${testId}`).once("value");
+      const ansMap = ansSnap.val() || {};
+      const merged = (t.questions || []).map((qItem, idx) => {
+        const aItem = ansMap[idx];
+        const correct = (typeof aItem === "object" && aItem ? aItem.correct : aItem || "A").toUpperCase();
+        const explanation = (typeof aItem === "object" && aItem && aItem.explanation) ? aItem.explanation : "";
+        return {
+          q: qItem.q || "",
+          A: qItem.A || "",
+          B: qItem.B || "",
+          C: qItem.C || "",
+          D: qItem.D || "",
+          correct,
+          explanation,
+          imageUrl: qItem.imageUrl || ""
+        };
+      });
+
+      ADMIN_STATE.draftTestMeta = {
+        editingTestId: testId,
+        title: t.title || "",
+        batchId: t.batchId || "",
+        category: t.category || "",
+        duration: t.duration ?? 30,
+        plusMark: t.plusMark ?? 4,
+        minusMark: (t.minusMark !== undefined && t.minusMark !== null) ? t.minusMark : 1
+      };
+      ADMIN_STATE.draftTestQuestions = merged;
+      ADMIN_STATE.editingQuestionIdx = -1;
+      saveDraftLocal();
+      showToast(`"${t.title}" एडिट मोड में लोड हो गया (${merged.length} प्रश्न)!`, "INFO");
+      renderAdminWorkspace();
+    } catch (err) {
+      showAppAlert("टेस्ट लोड करने में त्रुटि: " + err.message, "Error", "DANGER");
+    }
+  };
+
+  window.adminPublishCBTTest = async function () {
+    adminSyncTestMeta();
+    const m = ADMIN_STATE.draftTestMeta || getDefaultMeta();
+    const title = String(m.title || "").trim();
+    if (!title || !ADMIN_STATE.draftTestQuestions.length) {
+      return showAppAlert("कृपया टेस्ट का नाम लिखें और कम से कम 1 प्रश्न जोड़ें।", "अधूरा टेस्ट", "DANGER");
+    }
+
+    const batchId = m.batchId || "";
+    const isEdit = Boolean(m.editingTestId);
+    const testId = isEdit ? m.editingTestId : `TST_${Date.now()}`;
+    const prev = (isEdit && ADMIN_STATE.tests[testId]) ? ADMIN_STATE.tests[testId] : {};
+
+    const duration = (m.duration !== "" && Number(m.duration) > 0) ? Number(m.duration) : 30;
+    const plusMark = (m.plusMark !== "" && Number(m.plusMark) > 0) ? Number(m.plusMark) : 4;
+    const minusMark = (m.minusMark !== "" && m.minusMark !== null && m.minusMark !== undefined) ? Math.max(0, Number(m.minusMark)) : 0;
+
+    const publicQuestions = ADMIN_STATE.draftTestQuestions.map((item) => {
+      const obj = { q: item.q, A: item.A, B: item.B, C: item.C, D: item.D };
+      if (item.imageUrl) obj.imageUrl = item.imageUrl;
+      return obj;
+    });
+    const secretAnswers = ADMIN_STATE.draftTestQuestions.map((item) => ({
+      correct: item.correct,
+      explanation: item.explanation || ""
+    }));
+
+    await db.ref().update({
+      [`tests/${testId}`]: {
+        testId,
+        title,
+        batchId,
+        isFree: !batchId,
+        category: m.category || "All",
+        duration,
+        plusMark,
+        minusMark,
+        status: "ACTIVE",
+        questions: publicQuestions,
+        createdAt: prev.createdAt || Date.now(),
+        updatedAt: Date.now()
+      },
+      [`testAnswers/${testId}`]: secretAnswers
+    });
+
+    ADMIN_STATE.draftTestQuestions = [];
+    ADMIN_STATE.draftTestMeta = getDefaultMeta();
+    ADMIN_STATE.bulkRawText = "";
+    ADMIN_STATE.editingQuestionIdx = -1;
+    localStorage.removeItem(DRAFT_KEY);
+
+    showToast(isEdit ? "CBT टेस्ट सफलतापूर्वक अपडेट हो गया!" : "ऑनलाइन CBT टेस्ट लाइव हो गया!", "SUCCESS");
+    renderAdminWorkspace();
+  };
+
+  window.renderAdminTestsTab = function (container) {
+    const tests = Object.values(ADMIN_STATE.tests || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const batches = Object.values(ADMIN_STATE.batches || {});
+    const m = ADMIN_STATE.draftTestMeta || getDefaultMeta();
+    const editQ = (ADMIN_STATE.editingQuestionIdx >= 0) ? ADMIN_STATE.draftTestQuestions[ADMIN_STATE.editingQuestionIdx] : null;
+    const categories = (APP_CONFIG && APP_CONFIG.categories ? APP_CONFIG.categories : []).filter((c) => c !== "All");
+
+    container.innerHTML = `
+      <div class="grid lg:grid-cols-2 gap-4 text-xs">
+        <!-- Smart CBT Test Builder (Bulk || + Single + AutoSave) -->
+        <div class="ed-card p-4 rounded-2xl space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-extrabold text-pink-700">
+              <i class="fa-solid fa-laptop-code mr-1.5"></i> ${m.editingTestId ? "CBT टेस्ट एडिट करें" : "नया ऑनलाइन CBT टेस्ट बनाएं"}
+            </h3>
+            <div class="flex items-center gap-1.5">
+              <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black">Auto-Save ON</span>
+              ${(ADMIN_STATE.draftTestQuestions.length || m.title || m.editingTestId)
+                ? `<button type="button" onclick="adminClearTestDraft()" class="text-rose-600 font-extrabold text-[11px]">Clear Draft</button>`
+                : ""}
+            </div>
+          </div>
+
+          <div class="grid sm:grid-cols-2 gap-2">
+            <input type="text" id="admTestTitle" value="${escapeHtml(m.title || "")}" oninput="adminSyncTestMeta()" placeholder="टेस्ट का नाम (जैसे: Rajasthan CET Mock Test 01) *" class="ed-input sm:col-span-2 px-3 py-2 rounded-xl font-bold" />
+            <select id="admTestBatch" onchange="adminSyncTestMeta()" class="ed-input px-3 py-2 rounded-xl font-bold">
+              <option value="" ${!m.batchId ? "selected" : ""}>FREE Test (सभी छात्रों के लिए)</option>
+              ${batches.map((b) => `<option value="${escapeHtml(b.batchId)}" ${m.batchId === b.batchId ? "selected" : ""}>Batch: ${escapeHtml(b.title)}</option>`).join("")}
+            </select>
+            <select id="admTestCategory" onchange="adminSyncTestMeta()" class="ed-input px-3 py-2 rounded-xl font-bold">
+              ${categories.map((c) => `<option value="${escapeHtml(c)}" ${m.category === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+            </select>
+            <input type="number" id="admTestDuration" value="${escapeHtml(String(m.duration ?? 30))}" oninput="adminSyncTestMeta()" placeholder="समय (मिनट)" class="ed-input px-3 py-2 rounded-xl font-bold" />
+            <div class="grid grid-cols-2 gap-1.5">
+              <input type="number" id="admTestPlus" value="${escapeHtml(String(m.plusMark ?? 4))}" step="0.5" oninput="adminSyncTestMeta()" placeholder="+अंक" class="ed-input px-2.5 py-2 rounded-xl font-bold" />
+              <input type="number" id="admTestMinus" value="${escapeHtml(String(m.minusMark ?? 1))}" step="0.25" min="0" oninput="adminSyncTestMeta()" placeholder="-अंक (0=No Neg)" class="ed-input px-2.5 py-2 rounded-xl font-bold" />
+            </div>
+          </div>
+
+          <!-- Input Mode Switcher -->
+          <div class="flex gap-1.5 bg-slate-100 p-1 rounded-xl font-extrabold">
+            <button type="button" onclick="adminSwitchTestInputMode('bulk')" class="flex-1 py-2 rounded-lg text-xs transition ${ADMIN_STATE.testInputMode === "bulk" ? "bg-indigo-600 text-white shadow" : "text-slate-700"}">
+              <i class="fa-solid fa-bolt mr-1"></i> Bulk Upload (|| Format)
+            </button>
+            <button type="button" onclick="adminSwitchTestInputMode('single')" class="flex-1 py-2 rounded-lg text-xs transition ${ADMIN_STATE.testInputMode === "single" ? "bg-indigo-600 text-white shadow" : "text-slate-700"}">
+              <i class="fa-solid fa-plus mr-1"></i> ${editQ ? `Edit Q#${ADMIN_STATE.editingQuestionIdx + 1}` : "1-by-1 + Image"}
+            </button>
+          </div>
+
+          ${ADMIN_STATE.testInputMode === "bulk" ? `
+            <!-- BULK || UPLOADER -->
+            <div class="bg-slate-50 p-3 rounded-2xl border space-y-2.5">
+              <div class="flex flex-wrap items-center justify-between gap-1.5">
+                <span class="font-extrabold text-slate-800">हर लाइन में 1 प्रश्न (<code>||</code> से अलग करें)</span>
+                <div class="flex gap-1.5">
+                  <button type="button" onclick="adminInsertPipeSample()" class="bg-indigo-100 text-indigo-800 font-bold px-2.5 py-1 rounded-lg text-[10px]">Sample डालें</button>
+                  <label class="bg-slate-800 text-amber-300 font-bold px-2.5 py-1 rounded-lg text-[10px] cursor-pointer">
+                    <i class="fa-solid fa-file-import mr-1"></i>.txt / .json फ़ाइल
+                    <input type="file" accept=".txt,.json,.csv" onchange="adminHandleBulkFileUpload(this)" class="hidden" />
+                  </label>
+                </div>
+              </div>
+
+              <textarea id="admBulkTextarea" rows="6" oninput="adminOnBulkTextInput(this.value)" placeholder="प्रश्न || Option A || Option B || Option C || Option D || सही उत्तर (A/B/C/D) || व्याख्या (वैकल्पिक) || Image URL (वैकल्पिक)" class="ed-input w-full px-3 py-2 rounded-xl bg-white font-mono text-[11px] leading-relaxed">${escapeHtml(ADMIN_STATE.bulkRawText || "")}</textarea>
+
+              <label class="flex items-center gap-2 text-[11px] font-bold text-slate-600 cursor-pointer">
+                <input type="checkbox" ${ADMIN_STATE.bulkStripNumbering ? "checked" : ""} onchange="ADMIN_STATE.bulkStripNumbering=this.checked; adminOnBulkTextInput(document.getElementById('admBulkTextarea').value);" class="accent-indigo-600" />
+                <span>आगे से अपने-आप "1." या "Q1." हटाएं</span>
+              </label>
+
+              <div id="admBulkStatusBox" class="text-[11px]"></div>
+
+              <button type="button" onclick="adminImportBulkQuestions()" class="w-full bg-slate-900 text-amber-300 font-extrabold py-2.5 rounded-xl shadow">
+                <i class="fa-solid fa-file-circle-plus mr-1"></i> सभी Valid प्रश्न लिस्ट में जोड़ें
+              </button>
+            </div>
+          ` : `
+            <!-- SINGLE QUESTION FORM (WITH IMAGE SUPPORT) -->
+            <div class="bg-slate-50 p-3 rounded-2xl border space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="font-extrabold text-slate-800">${editQ ? `प्रश्न #${ADMIN_STATE.editingQuestionIdx + 1} एडिट करें` : "नया प्रश्न जोड़ें"}</span>
+                ${editQ ? `<button type="button" onclick="ADMIN_STATE.editingQuestionIdx=-1; renderAdminWorkspace();" class="text-rose-600 font-bold text-[10px]">Cancel Edit</button>` : ""}
+              </div>
+              <textarea id="admQText" rows="2" placeholder="प्रश्न लिखें..." class="ed-input w-full px-3 py-2 rounded-xl bg-white font-bold">${escapeHtml(editQ?.q || "")}</textarea>
+              <div class="grid grid-cols-2 gap-2">
+                <input type="text" id="admQA" value="${escapeHtml(editQ?.A || "")}" placeholder="Option A" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="text" id="admQB" value="${escapeHtml(editQ?.B || "")}" placeholder="Option B" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="text" id="admQC" value="${escapeHtml(editQ?.C || "")}" placeholder="Option C" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="text" id="admQD" value="${escapeHtml(editQ?.D || "")}" placeholder="Option D" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                <select id="admQCorrect" class="ed-input px-2.5 py-1.5 rounded-lg bg-white font-extrabold">
+                  ${["A", "B", "C", "D"].map((opt) => `<option value="${opt}" ${(editQ?.correct || "A") === opt ? "selected" : ""}>सही: ${opt}</option>`).join("")}
+                </select>
+                <input type="text" id="admQExp" value="${escapeHtml(editQ?.explanation || "")}" placeholder="सॉल्यूशन / व्याख्या (वैकल्पिक)" class="ed-input col-span-2 px-2.5 py-1.5 rounded-lg bg-white" />
+              </div>
+              <div class="grid sm:grid-cols-2 gap-2">
+                <input type="text" id="admQImgUrl" value="${escapeHtml(editQ?.imageUrl || "")}" placeholder="प्रश्न इमेज लिंक (वैकल्पिक)" class="ed-input px-2.5 py-1.5 rounded-lg bg-white" />
+                <input type="file" id="admQImgFile" accept="image/*" class="ed-input px-2 py-1 rounded-lg bg-white text-[10px]" />
+              </div>
+              <button type="button" onclick="adminPushDraftQuestion()" class="w-full bg-slate-900 text-amber-300 font-extrabold py-2 rounded-xl">
+                ${editQ ? `✅ प्रश्न #${ADMIN_STATE.editingQuestionIdx + 1} अपडेट करें` : "+ लिस्ट में प्रश्न जोड़ें"}
+              </button>
+            </div>
+          `}
+
+          <!-- Added Draft Questions List -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between font-extrabold text-slate-700">
+              <span>जुड़े हुए प्रश्न: <span class="text-indigo-700">${ADMIN_STATE.draftTestQuestions.length}</span></span>
+              ${ADMIN_STATE.draftTestQuestions.length ? `<button type="button" onclick="adminExportDraftAsPipe()" class="text-indigo-600 text-[10px] font-bold"><i class="fa-regular fa-copy mr-1"></i>|| फॉर्मेट कॉपी करें</button>` : ""}
+            </div>
+            ${ADMIN_STATE.draftTestQuestions.length ? `
+              <div class="max-h-48 overflow-y-auto custom-scroll space-y-1.5 pr-1">
+                ${ADMIN_STATE.draftTestQuestions.map((dq, i) => `
+                  <div class="p-2 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-between gap-2">
+                    <div class="min-w-0 flex-1">
+                      <div class="truncate font-bold">Q${i + 1}. ${escapeHtml(dq.q)} <strong class="text-emerald-700">[${dq.correct}]</strong></div>
+                      <div class="text-[10px] text-slate-500 flex gap-2">
+                        ${dq.explanation ? `<span>💡 व्याख्या</span>` : ""}
+                        ${dq.imageUrl ? `<span>🖼️ इमेज</span>` : ""}
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <button type="button" onclick="adminMoveDraftQuestion(${i}, -1)" class="px-1.5 py-0.5 rounded bg-white border text-[10px]" title="ऊपर ले जाएं">↑</button>
+                      <button type="button" onclick="adminMoveDraftQuestion(${i}, 1)" class="px-1.5 py-0.5 rounded bg-white border text-[10px]" title="नीचे ले जाएं">↓</button>
+                      <button type="button" onclick="adminEditDraftQuestion(${i})" class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-bold text-[10px]">Edit</button>
+                      <button type="button" onclick="adminRemoveDraftQuestion(${i})" class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-black text-[10px]">✕</button>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            ` : `<div class="p-3 rounded-xl bg-slate-50 text-center text-slate-400 font-bold">अभी कोई प्रश्न नहीं जुड़ा है।</div>`}
+          </div>
+
+          <button type="button" onclick="adminPublishCBTTest()" class="w-full emerald-gradient text-white font-extrabold py-3 rounded-xl shadow-lg">
+            <i class="fa-solid fa-paper-plane mr-1"></i> ${m.editingTestId ? "अपडेट किया हुआ CBT टेस्ट सेव करें" : "CBT टेस्ट पब्लिश करें (सुरक्षित Answer Key के साथ)"}
+          </button>
+        </div>
+
+        <!-- Published Live Tests List (With Edit Button) -->
+        <div class="ed-card p-4 rounded-2xl space-y-3">
+          <h3 class="text-sm font-extrabold">लाइव CBT टेस्ट सीरीज (${tests.length})</h3>
+          <div class="space-y-2.5 max-h-[560px] overflow-y-auto custom-scroll">
+            ${tests.length ? tests.map((t) => {
+              const attCnt = Object.keys((ADMIN_STATE.testAttempts && ADMIN_STATE.testAttempts[t.testId]) || {}).length;
+              const minusVal = (t.minusMark !== undefined && t.minusMark !== null) ? t.minusMark : 1;
+              return `
+                <div class="p-3 rounded-xl bg-slate-50 border space-y-1.5">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="px-2 py-0.5 rounded-full text-[9px] font-black ${t.isFree ? "bg-emerald-100 text-emerald-800" : "bg-pink-100 text-pink-800"}">${t.isFree ? "FREE" : "BATCH ONLY"}</span>
+                    <span class="text-[10px] font-bold text-indigo-700">${attCnt} छात्रों ने दिया</span>
+                  </div>
+                  <div class="font-extrabold text-sm text-slate-900">${escapeHtml(t.title)}</div>
+                  <div class="text-[11px] text-slate-500">${(t.questions || []).length} सवाल • ${t.duration} Min • +${t.plusMark}/-${minusVal}</div>
+                  <div class="flex flex-wrap gap-1.5 pt-1">
+                    <button type="button" onclick="adminEditPublishedTest('${escapeHtml(t.testId)}')" class="bg-amber-100 text-amber-900 font-bold px-3 py-1.5 rounded-lg text-[10px]"><i class="fa-solid fa-pen mr-1"></i>Edit Test</button>
+                    <button type="button" onclick="adminViewTestLeaderboard('${escapeHtml(t.testId)}')" class="bg-indigo-600 text-white font-bold px-3 py-1.5 rounded-lg text-[10px]">रैंक लिस्ट देखें</button>
+                    <button type="button" onclick="adminDeleteCBTTest('${escapeHtml(t.testId)}')" class="bg-rose-100 text-rose-700 font-bold px-3 py-1.5 rounded-lg text-[10px]">हटाएं</button>
+                  </div>
+                </div>
+              `;
+            }).join("") : `<p class="text-center text-slate-400 py-8">अभी कोई टेस्ट पब्लिश नहीं हुआ है।</p>`}
+          </div>
+        </div>
+      </div>
+    `;
+
+    if (ADMIN_STATE.testInputMode === "bulk") updateBulkLiveStatus();
+  };
+})();
