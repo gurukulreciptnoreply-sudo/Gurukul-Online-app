@@ -2832,3 +2832,151 @@ window.renderBatchClassroomContent = function () {
   updateCountdowns();
   liveScheduleTicker = setInterval(updateCountdowns, 1000);
 };
+/* =====================================================================
+   FINAL FIX: BLANK SHIPPING LABEL & MOBILE A4 PDF ALIGNMENT PATCH
+   (Paste at the very bottom of js/admin.js)
+   ===================================================================== */
+
+// Helper: Wait until all images (Logo / QR) finish loading before PDF capture
+function waitForPdfImages(container) {
+  const imgs = Array.from(container.querySelectorAll("img"));
+  if (!imgs.length) return Promise.resolve();
+  return Promise.all(
+    imgs.map((img) => {
+      if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+      return new Promise((resolve) => {
+        const timer = setTimeout(resolve, 2500);
+        img.onload = () => { clearTimeout(timer); resolve(); };
+        img.onerror = () => { clearTimeout(timer); resolve(); };
+      });
+    })
+  );
+}
+
+// Universal Fixed-Width A4 Exporter (Works cleanly on Mobile, Browser & APK)
+window.exportHtmlElementToPdfUniversal = async function (element, filename, pageFormat = "a4") {
+  // Clone into an off-screen 750px desktop-width stage so mobile screen never clips it
+  const stage = document.createElement("div");
+  stage.style.cssText = "position:fixed;left:-9999px;top:0;width:750px;background:#ffffff;padding:12px;box-sizing:border-box;z-index:-1;";
+  stage.innerHTML = element.innerHTML;
+  document.body.appendChild(stage);
+
+  try {
+    await waitForPdfImages(stage);
+
+    const opt = {
+      margin: 6,
+      filename: filename,
+      image: { type: "jpeg", quality: 0.96 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        windowWidth: 794,
+        scrollX: 0,
+        scrollY: 0
+      },
+      jsPDF: { unit: "mm", format: pageFormat, orientation: "portrait" },
+      pagebreak: { mode: ["css", "legacy"] }
+    };
+
+    const isNativeApk = Boolean(
+      window.Capacitor &&
+      typeof window.Capacitor.isNativePlatform === "function" &&
+      window.Capacitor.isNativePlatform()
+    );
+
+    if (!isNativeApk) {
+      return await html2pdf().set(opt).from(stage).save();
+    }
+
+    showToast("PDF तैयार हो रही है...", "INFO");
+    const dataUri = await html2pdf().set(opt).from(stage).outputPdf("datauristring");
+    const base64Data = dataUri.split(",")[1];
+    const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+
+    if (plugins.Filesystem && plugins.Share) {
+      const saved = await plugins.Filesystem.writeFile({
+        path: filename,
+        data: base64Data,
+        directory: "CACHE"
+      });
+      await plugins.Share.share({
+        title: filename,
+        text: "GURUKUL ONLINE APP — Official PDF",
+        url: saved.uri,
+        dialogTitle: "PDF सेव या प्रिंट करें"
+      });
+      showToast("PDF तैयार है! Save या Print चुनें।", "SUCCESS");
+      return;
+    }
+
+    window.print();
+  } catch (err) {
+    console.error("PDF Export Error:", err);
+    showToast("PDF बनाने में त्रुटि आई। कृपया दोबारा प्रयास करें।", "DANGER");
+  } finally {
+    stage.remove();
+  }
+};
+
+// Table-based Bulletproof Shipping Label (Exact 3 Labels per A4 Page, Zero Blank Issue)
+window.buildSingleA4ThirdLabelHTML = function (o) {
+  const a = o.shippingAddress || {};
+  const qr = buildQrImageUrl(`${o.orderId}|${a.pincode || ""}`, 76);
+  return `
+    <div style="width:720px;height:315px;box-sizing:border-box;border:2px dashed #0f172a;border-radius:8px;padding:12px 16px;margin:0 auto 14px auto;background:#ffffff;color:#0f172a;font-family:Arial,sans-serif;page-break-inside:avoid;">
+      <table style="width:100%;border-collapse:collapse;border-bottom:2px solid #0f172a;margin-bottom:10px;">
+        <tr>
+          <td style="padding-bottom:8px;vertical-align:middle;">
+            <div style="font-size:15px;font-weight:900;color:#312e81;">PREPAID BOOK PARCEL — DO NOT COLLECT CASH</div>
+            <div style="font-size:11.5px;font-weight:700;color:#334155;margin-top:3px;">Order ID: ${escapeHtml(o.orderId)} &nbsp;|&nbsp; Paid Online: ${formatCurrency(o.finalAmount)}</div>
+          </td>
+          <td style="width:68px;text-align:right;padding-bottom:8px;vertical-align:middle;">
+            <img src="${qr}" crossorigin="anonymous" style="width:58px;height:58px;display:inline-block;" />
+          </td>
+        </tr>
+      </table>
+
+      <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:10px 14px;margin-bottom:10px;line-height:1.45;">
+        <div style="font-size:10px;font-weight:800;color:#475569;text-transform:uppercase;">DELIVER TO (प्राप्तकर्ता):</div>
+        <div style="font-size:16px;font-weight:900;color:#0f172a;margin-top:2px;">${escapeHtml(a.fullName || o.studentName)} &nbsp;<span style="font-size:13px;font-weight:700;">(+91 ${escapeHtml(a.phone || o.studentPhone || "")})</span></div>
+        <div style="font-size:12.5px;color:#1e293b;margin-top:2px;">${escapeHtml(a.addressLine || "")}</div>
+        <div style="font-size:13px;color:#0f172a;font-weight:700;margin-top:2px;">${escapeHtml(a.city || "")}, ${escapeHtml(a.state || "")} — <span style="font-size:14px;font-weight:900;background:#e0e7ff;padding:1px 6px;border-radius:4px;">PIN: ${escapeHtml(a.pincode || "")}</span></div>
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;border-top:1px solid #e2e8f0;font-size:11px;color:#334155;">
+        <tr>
+          <td style="padding-top:6px;width:55%;"><strong>Items:</strong> ${escapeHtml(o.title)}</td>
+          <td style="padding-top:6px;text-align:right;"><strong>FROM:</strong> ${APP_CONFIG.appName}, Dhankoli (${APP_CONFIG.helplines[0]})</td>
+        </tr>
+      </table>
+    </div>
+  `;
+};
+
+window.adminPrintShippingLabelPDF = async function (uid, orderId) {
+  const o = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (!o || !o.shippingAddress) return showToast("शिपिंग पता उपलब्ध नहीं है।", "DANGER");
+
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = window.buildSingleA4ThirdLabelHTML(o);
+  await window.exportHtmlElementToPdfUniversal(tempDiv, `ShippingLabel_${o.orderId}.pdf`);
+};
+
+window.adminPrintAllLabels3PerA4 = async function () {
+  const bookOrders = getAllOrdersFlat().filter((o) => o.orderType === "BOOK" && o.status === "APPROVED" && o.shippingAddress);
+  if (!bookOrders.length) return showToast("प्रिंट करने के लिए कोई अप्रूव्ड बुक ऑर्डर नहीं है।", "WARNING");
+
+  let pagesHtml = "";
+  for (let i = 0; i < bookOrders.length; i += 3) {
+    const chunk = bookOrders.slice(i, i + 3);
+    const breakStyle = i + 3 < bookOrders.length ? "page-break-after:always;" : "";
+    pagesHtml += `<div style="${breakStyle}">${chunk.map(window.buildSingleA4ThirdLabelHTML).join("")}</div>`;
+  }
+
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = pagesHtml;
+  await window.exportHtmlElementToPdfUniversal(tempDiv, `Gurukul_Shipping_Labels_A4_${Date.now()}.pdf`);
+};
