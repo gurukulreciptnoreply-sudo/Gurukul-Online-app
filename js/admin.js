@@ -2425,3 +2425,410 @@ async function adminSaveSecurityAndAppSettings() {
     }
   };
 })();
+/* =====================================================================
+   GURUKUL ONLINE APP — DROP-IN UPGRADE PATCH (PASTE AT END OF js/admin.js)
+   1. APK Native PDF Download  2. 3-Per-A4 Shipping Labels
+   3. Modern Auto-Landscape Player  4. Live Class Scheduler & Countdown
+   ===================================================================== */
+
+// =========================================================
+// 1. UNIVERSAL PDF DOWNLOADER (WORKS IN BROWSER + ANDROID APK)
+// =========================================================
+async function exportHtmlElementToPdfUniversal(element, filename, pageFormat = "a4") {
+  const opt = {
+    margin: 5,
+    filename: filename,
+    image: { type: "jpeg", quality: 0.96 },
+    html2canvas: { scale: 2, useCORS: true, logging: false },
+    jsPDF: { unit: "mm", format: pageFormat, orientation: "portrait" },
+    pagebreak: { mode: ["css", "legacy"] }
+  };
+
+  const isNativeApk = Boolean(window.Capacitor && typeof window.Capacitor.isNativePlatform === "function" && window.Capacitor.isNativePlatform());
+
+  if (!isNativeApk) {
+    return html2pdf().set(opt).from(element).save();
+  }
+
+  try {
+    showToast("PDF तैयार हो रही है...", "INFO");
+    const dataUri = await html2pdf().set(opt).from(element).outputPdf("datauristring");
+    const base64Data = dataUri.split(",")[1];
+    const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+
+    if (plugins.Filesystem && plugins.Share) {
+      const saved = await plugins.Filesystem.writeFile({
+        path: filename,
+        data: base64Data,
+        directory: "CACHE"
+      });
+      await plugins.Share.share({
+        title: filename,
+        text: "GURUKUL ONLINE APP — Official PDF",
+        url: saved.uri,
+        dialogTitle: "PDF सेव या प्रिंट करें"
+      });
+      showToast("PDF तैयार है! Save या Print चुनें।", "SUCCESS");
+      return;
+    }
+
+    // Fallback if Capacitor Filesystem plugin not yet built in APK
+    const win = window.open("", "_blank");
+    if (win) {
+      win.document.write(`<html><head><title>${filename}</title></head><body style="margin:0;">${element.innerHTML}<script>setTimeout(()=>window.print(),500);<\/script></body></html>`);
+      win.document.close();
+    } else {
+      window.print();
+    }
+  } catch (err) {
+    console.error("APK PDF Export Error:", err);
+    showToast("PDF एक्सपोर्ट में समस्या आई। नया APK अपडेट इंस्टॉल करें।", "DANGER");
+  }
+}
+
+// Override Receipt PDF to use Universal APK + Browser Exporter
+const _origGenerateOrderReceiptPDF = window.generateOrderReceiptPDF;
+window.generateOrderReceiptPDF = async function (orderId, overrideOrderObj = null) {
+  const ord = overrideOrderObj || (APP_STATE.orders && APP_STATE.orders[orderId]);
+  if (!ord) return showToast("ऑर्डर विवरण नहीं मिला।", "DANGER");
+
+  const wrap = document.getElementById("pdfPrintWrapper");
+  const area = document.getElementById("pdfPrintArea");
+  if (!wrap || !area) return _origGenerateOrderReceiptPDF(orderId, overrideOrderObj);
+
+  // Temporarily intercept html2pdf.save() so original HTML layout stays 100% intact
+  const origHtml2Pdf = window.html2pdf;
+  window.html2pdf = function () {
+    return {
+      set: () => ({
+        from: (el) => ({
+          save: () => {
+            window.html2pdf = origHtml2Pdf;
+            return exportHtmlElementToPdfUniversal(el, `Receipt_${ord.orderId}.pdf`);
+          }
+        })
+      })
+    };
+  };
+
+  try {
+    await _origGenerateOrderReceiptPDF(orderId, overrideOrderObj);
+  } finally {
+    window.html2pdf = origHtml2Pdf;
+    wrap.classList.add("hidden");
+  }
+};
+
+// =========================================================
+// 2. EXACT 3-LABELS-PER-A4 SHIPPING LABEL ENGINE (NO CUT-OFF)
+// =========================================================
+function buildSingleA4ThirdLabelHTML(o) {
+  const a = o.shippingAddress || {};
+  const qr = buildQrImageUrl(`${o.orderId}|${a.pincode || ""}`, 78);
+  return `
+    <div style="width:190mm;height:86mm;box-sizing:border-box;border:1.8px dashed #0f172a;border-radius:6px;padding:4mm 5mm;margin:0 auto 4mm auto;background:#ffffff;font-family:Arial,sans-serif;display:flex;flex-direction:column;justify-content:space-between;page-break-inside:avoid;overflow:hidden;">
+      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1.5px solid #0f172a;padding-bottom:2mm;">
+        <div>
+          <div style="font-size:13px;font-weight:900;color:#312e81;letter-spacing:0.3px;">PREPAID BOOK PARCEL — DO NOT COLLECT CASH</div>
+          <div style="font-size:10.5px;font-weight:700;color:#334155;margin-top:1px;">Order ID: ${escapeHtml(o.orderId)} &nbsp;|&nbsp; Paid Online: ${formatCurrency(o.finalAmount)}</div>
+        </div>
+        <img src="${qr}" crossorigin="anonymous" style="width:15mm;height:15mm;object-fit:contain;" />
+      </div>
+
+      <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:4px;padding:2.5mm 3.5mm;font-size:11.5px;line-height:1.4;">
+        <div style="font-size:9px;font-weight:800;color:#475569;text-transform:uppercase;">DELIVER TO (प्राप्तकर्ता):</div>
+        <div style="font-size:14px;font-weight:900;color:#0f172a;">${escapeHtml(a.fullName || o.studentName)} &nbsp;<span style="font-size:11.5px;font-weight:700;">(+91 ${escapeHtml(a.phone || o.studentPhone || "")})</span></div>
+        <div style="color:#1e293b;margin-top:1px;">${escapeHtml(a.addressLine || "")}</div>
+        <div style="color:#0f172a;font-weight:700;">${escapeHtml(a.city || "")}, ${escapeHtml(a.state || "")} — <span style="font-size:13px;font-weight:900;background:#e0e7ff;padding:0 4px;border-radius:3px;">PIN: ${escapeHtml(a.pincode || "")}</span></div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;border-top:1px solid #e2e8f0;padding-top:1.5mm;color:#334155;">
+        <div style="max-width:58%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><strong>Items:</strong> ${escapeHtml(o.title)}</div>
+        <div style="text-align:right;"><strong>FROM:</strong> ${APP_CONFIG.appName}, Dhankoli (${APP_CONFIG.helplines[0]})</div>
+      </div>
+    </div>
+  `;
+}
+
+window.adminPrintShippingLabelPDF = async function (uid, orderId) {
+  const o = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+  if (!o || !o.shippingAddress) return showToast("शिपिंग पता उपलब्ध नहीं है।", "DANGER");
+
+  const wrap = document.getElementById("pdfPrintWrapper");
+  const area = document.getElementById("pdfPrintArea");
+  wrap.classList.remove("hidden");
+  area.style.width = "196mm";
+  area.innerHTML = `<div style="padding:2mm 0;background:#fff;">${buildSingleA4ThirdLabelHTML(o)}</div>`;
+
+  try {
+    await exportHtmlElementToPdfUniversal(area, `ShippingLabel_${o.orderId}.pdf`);
+  } finally {
+    area.style.width = "";
+    wrap.classList.add("hidden");
+  }
+};
+
+window.adminPrintAllLabels3PerA4 = async function () {
+  const bookOrders = getAllOrdersFlat().filter((o) => o.orderType === "BOOK" && o.status === "APPROVED" && o.shippingAddress);
+  if (!bookOrders.length) return showToast("प्रिंट करने के लिए कोई अप्रूव्ड बुक ऑर्डर नहीं है।", "WARNING");
+
+  const wrap = document.getElementById("pdfPrintWrapper");
+  const area = document.getElementById("pdfPrintArea");
+  wrap.classList.remove("hidden");
+  area.style.width = "196mm";
+
+  let pagesHtml = "";
+  for (let i = 0; i < bookOrders.length; i += 3) {
+    const chunk = bookOrders.slice(i, i + 3);
+    const breakStyle = i + 3 < bookOrders.length ? "page-break-after:always;" : "";
+    pagesHtml += `<div style="padding:2mm 0;background:#fff;${breakStyle}">${chunk.map(buildSingleA4ThirdLabelHTML).join("")}</div>`;
+  }
+  area.innerHTML = pagesHtml;
+
+  try {
+    await exportHtmlElementToPdfUniversal(area, `Gurukul_Shipping_Labels_A4_${Date.now()}.pdf`);
+  } finally {
+    area.style.width = "";
+    wrap.classList.add("hidden");
+  }
+};
+// Inject "Print 3 Labels / A4 Sheet" button into Admin Books Tab
+const _origRenderAdminBooksTab = window.renderAdminBooksTab;
+window.renderAdminBooksTab = function (container) {
+  _origRenderAdminBooksTab(container);
+  const headings = container.querySelectorAll("h3");
+  headings.forEach((h) => {
+    if (h.textContent.includes("शिपिंग लेबल")) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ml-auto bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3.5 py-1.5 rounded-xl text-[11px] shadow";
+      btn.innerHTML = '<i class="fa-solid fa-layer-group mr-1"></i> Print 3 Labels / A4 Sheet';
+      btn.onclick = () => window.adminPrintAllLabels3PerA4();
+      h.parentElement.classList.add("flex", "flex-wrap", "items-center", "justify-between", "gap-2");
+      h.insertAdjacentElement("afterend", btn);
+    }
+  });
+};
+
+// =========================================================
+// 3. MODERN AUTO-LANDSCAPE FULLSCREEN VIDEO PLAYER (16:9)
+// =========================================================
+(function injectModernFullscreenPlayerCSS() {
+  if (document.getElementById("modernPlayerPatchCSS")) return;
+  const style = document.createElement("style");
+  style.id = "modernPlayerPatchCSS";
+  style.textContent = `
+    #protectedVideoCard.modern-cinema-fs {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: 100vw !important;
+      max-height: 100vh !important;
+      border-radius: 0 !important;
+      background: #000 !important;
+      z-index: 99999 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: center !important;
+      overflow: hidden !important;
+    }
+    #protectedVideoCard.modern-cinema-fs .video-stage-wrap {
+      width: 100vw !important;
+      height: 100vh !important;
+      aspect-ratio: auto !important;
+    }
+    #protectedVideoCard.modern-cinema-fs .cinema-auto-bar {
+      position: absolute !important;
+      left: 0; right: 0;
+      z-index: 40 !important;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.82), transparent) !important;
+      transition: opacity 0.3s ease;
+    }
+    #protectedVideoCard.modern-cinema-fs .cinema-auto-bar-bottom {
+      position: absolute !important;
+      bottom: 0; left: 0; right: 0;
+      z-index: 40 !important;
+      background: linear-gradient(to top, rgba(0,0,0,0.88), transparent) !important;
+      transition: opacity 0.3s ease;
+    }
+    #protectedVideoCard.modern-cinema-fs.controls-hidden .cinema-auto-bar,
+    #protectedVideoCard.modern-cinema-fs.controls-hidden .cinema-auto-bar-bottom {
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
+let cinemaHideTimer = null;
+
+function resetCinemaControlsTimer() {
+  const card = document.getElementById("protectedVideoCard");
+  if (!card || !card.classList.contains("modern-cinema-fs")) return;
+  card.classList.remove("controls-hidden");
+  if (cinemaHideTimer) clearTimeout(cinemaHideTimer);
+  cinemaHideTimer = setTimeout(() => {
+    if (card.classList.contains("modern-cinema-fs")) {
+      card.classList.add("controls-hidden");
+    }
+  }, 3500);
+}
+
+window.toggleCustomVideoFullscreen = async function () {
+  const card = document.getElementById("protectedVideoCard");
+  if (!card) return;
+
+  const isEntering = !card.classList.contains("modern-cinema-fs");
+  const headerBar = card.firstElementChild;
+  const controlBar = card.querySelector("#playerSeekSlider")?.closest(".p-3, .px-4, .bg-slate-900") || card.children[2];
+  const stageWrap = document.getElementById("ytPlayerMount")?.parentElement;
+
+  if (stageWrap) stageWrap.classList.add("video-stage-wrap");
+  if (headerBar) headerBar.classList.add("cinema-auto-bar");
+  if (controlBar) controlBar.classList.add("cinema-auto-bar-bottom");
+
+  if (isEntering) {
+    card.classList.add("modern-cinema-fs");
+    card.classList.remove("controls-hidden");
+    card.onclick = () => resetCinemaControlsTimer();
+
+    try {
+      if (card.requestFullscreen) await card.requestFullscreen();
+      else if (card.webkitRequestFullscreen) await card.webkitRequestFullscreen();
+    } catch (e) {}
+
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock("landscape");
+      }
+    } catch (e) {}
+
+    resetCinemaControlsTimer();
+  } else {
+    card.classList.remove("modern-cinema-fs", "controls-hidden");
+    if (cinemaHideTimer) clearTimeout(cinemaHideTimer);
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
+    } catch (e) {}
+    try {
+      if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+    } catch (e) {}
+  }
+};
+
+const _origCloseProtectedVideoPlayer = window.closeProtectedVideoPlayer;
+window.closeProtectedVideoPlayer = function () {
+  const card = document.getElementById("protectedVideoCard");
+  if (card) card.classList.remove("modern-cinema-fs", "controls-hidden");
+  if (cinemaHideTimer) clearTimeout(cinemaHideTimer);
+  try {
+    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+  } catch (e) {}
+  _origCloseProtectedVideoPlayer();
+};
+
+// =========================================================
+// 4. LIVE CLASS SCHEDULER (ADMIN PICKER + STUDENT COUNTDOWN)
+// =========================================================
+const _origRenderAdminBatchesTab = window.renderAdminBatchesTab;
+window.renderAdminBatchesTab = function (container) {
+  _origRenderAdminBatchesTab(container);
+  const typeSel = document.getElementById("admContType");
+  const titleInp = document.getElementById("admContTitle");
+  if (!typeSel || !titleInp || document.getElementById("admContScheduleWrap")) return;
+
+  const schedWrap = document.createElement("div");
+  schedWrap.id = "admContScheduleWrap";
+  schedWrap.className = "sm:col-span-3 hidden bg-rose-50 border border-rose-200 p-2.5 rounded-xl flex flex-wrap items-center gap-2";
+  schedWrap.innerHTML = `
+    <label class="text-[11px] font-extrabold text-rose-800"><i class="fa-regular fa-calendar-clock mr-1"></i> Live Class Schedule (दिनांक व समय):</label>
+    <input type="datetime-local" id="admContScheduleTime" class="ed-input px-3 py-1.5 rounded-lg bg-white font-bold text-xs" />
+    <span class="text-[10px] text-slate-500 font-semibold">(खाली छोड़ने पर क्लास तुरंत लाइव दिखेगी)</span>
+  `;
+  titleInp.insertAdjacentElement("afterend", schedWrap);
+
+  const toggleSched = () => schedWrap.classList.toggle("hidden", typeSel.value !== "LIVE");
+  typeSel.addEventListener("change", toggleSched);
+  toggleSched();
+};
+
+window.adminAddBatchContentItem = async function () {
+  const bId = ADMIN_STATE.selectedBatchForContent;
+  if (!bId) return;
+
+  const type = document.getElementById("admContType").value;
+  const subject = document.getElementById("admContSubject").value.trim() || "General";
+  const chapter = document.getElementById("admContChapter").value.trim() || "Chapter 1";
+  const title = document.getElementById("admContTitle").value.trim();
+  const url = document.getElementById("admContUrl").value.trim();
+  const dppPdfUrl = document.getElementById("admContDppUrl").value.trim();
+  const schedRaw = document.getElementById("admContScheduleTime")?.value || "";
+  const scheduledAt = type === "LIVE" && schedRaw ? new Date(schedRaw).getTime() : null;
+
+  if (!title || !url) {
+    return showAppAlert("कृपया शीर्षक (Title) और वीडियो/PDF लिंक दोनों दर्ज करें।", "अधूरी जानकारी", "DANGER");
+  }
+
+  const itemId = `CNT_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  const obj = { itemId, type, subject, chapter, title, url, dppPdfUrl, scheduledAt, createdAt: Date.now() };
+  await db.ref(`paidContent/${bId}/items/${itemId}`).set(obj);
+  ADMIN_STATE.selectedBatchContentItems[itemId] = obj;
+  showToast(scheduledAt ? "Live Class सफलतापूर्वक शेड्यूल हो गई!" : "कंटेंट बैच में जुड़ गया!", "SUCCESS");
+  renderAdminWorkspace();
+};
+
+// Enhance Student Classroom to show Live Schedule Countdown
+let liveScheduleTicker = null;
+const _origRenderBatchClassroomContent = window.renderBatchClassroomContent;
+window.renderBatchClassroomContent = function () {
+  _origRenderBatchClassroomContent();
+  if (liveScheduleTicker) clearInterval(liveScheduleTicker);
+
+  const items = (activeClassroomData && activeClassroomData.content && activeClassroomData.content.items) || {};
+  const scheduledLive = Object.values(items).filter((it) => it && it.type === "LIVE" && it.scheduledAt && Number(it.scheduledAt) > Date.now());
+  if (!scheduledLive.length) return;
+
+  const body = document.getElementById("classroomBody");
+  if (!body) return;
+
+  const banner = document.createElement("div");
+  banner.className = "bg-rose-50 border-2 border-rose-300 p-3.5 rounded-2xl space-y-2";
+  banner.innerHTML = `
+    <div class="text-xs font-extrabold text-rose-800"><i class="fa-solid fa-tower-broadcast animate-pulse mr-1.5"></i> आगामी शेड्यूल्ड Live Classes (${scheduledLive.length})</div>
+    <div id="liveScheduleCardsBox" class="space-y-2"></div>
+  `;
+  body.prepend(banner);
+
+  const updateCountdowns = () => {
+    const box = document.getElementById("liveScheduleCardsBox");
+    if (!box) { clearInterval(liveScheduleTicker); return; }
+    const now = Date.now();
+    box.innerHTML = scheduledLive.map((it) => {
+      const diff = Number(it.scheduledAt) - now;
+      if (diff <= 0) {
+        return `
+          <div class="bg-white p-2.5 rounded-xl border border-emerald-300 flex items-center justify-between gap-2 text-xs">
+            <div><span class="bg-rose-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full">🔴 LIVE NOW</span> <strong class="ml-1">${escapeHtml(it.title)}</strong></div>
+            <button type="button" onclick="openClassroomLectureItem('${escapeHtml(it.itemId)}')" class="bg-rose-600 text-white font-extrabold px-3 py-1.5 rounded-lg text-[11px]">Join Live</button>
+          </div>
+        `;
+      }
+      const hrs = Math.floor(diff / 3600000);
+      const mins = Math.floor((diff % 3600000) / 60000);
+      const secs = Math.floor((diff % 60000) / 1000);
+      return `
+        <div class="bg-white p-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div>
+            <div class="font-extrabold text-slate-900">${escapeHtml(it.title)}</div>
+            <div class="text-[10px] font-bold text-slate-500">समय: ${formatDateTime(it.scheduledAt)}</div>
+          </div>
+          <span class="bg-slate-900 text-amber-300 font-mono font-extrabold px-2.5 py-1 rounded-lg text-[11px]">⏳ ${String(hrs).padStart(2, "0")}h : ${String(mins).padStart(2, "0")}m : ${String(secs).padStart(2, "0")}s</span>
+        </div>
+      `;
+    }).join("");
+  };
+
+  updateCountdowns();
+  liveScheduleTicker = setInterval(updateCountdowns, 1000);
+};
