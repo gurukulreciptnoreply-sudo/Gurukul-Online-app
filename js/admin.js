@@ -2569,3 +2569,628 @@ async function adminPrintAllLabels3PerA4() {
     };
   }
 })();
+/* =====================================================================
+   V4 BULLETPROOF DIRECT-CANVAS PDF ENGINE (ZERO html2canvas, ZERO BLANK)
+   Paste at the very bottom of js/admin.js
+   - Works 100% in Mobile Browser, Desktop & Android APK (Offline Ready)
+   - Clean Tax Invoice Receipt + Exact 3-Labels-Per-A4 Sheet
+   ===================================================================== */
+(function () {
+  const A4_W = 1240;
+  const A4_H = 1754;
+  const FONT_FAMILY = 'Arial, "Noto Sans Devanagari", "Segoe UI", sans-serif';
+
+  // 1. Safe CORS Image Loader (Logo / QR) — Never Taints Canvas
+  function loadImageForCanvas(url) {
+    return new Promise(async (resolve) => {
+      if (!url) return resolve(null);
+      try {
+        if (!url.startsWith("data:")) {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 3500);
+          const res = await fetch(url, { mode: "cors", signal: ctrl.signal });
+          clearTimeout(t);
+          if (res.ok) {
+            const blob = await res.blob();
+            const dataUrl = await new Promise((r) => {
+              const fr = new FileReader();
+              fr.onloadend = () => r(typeof fr.result === "string" ? fr.result : "");
+              fr.onerror = () => r("");
+              fr.readAsDataURL(blob);
+            });
+            if (dataUrl) url = dataUrl;
+          }
+        }
+      } catch (e) {}
+
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const timer = setTimeout(() => resolve(null), 3500);
+      img.onload = () => { clearTimeout(timer); resolve(img); };
+      img.onerror = () => { clearTimeout(timer); resolve(null); };
+      img.src = url;
+    });
+  }
+
+  // 2. Canvas Drawing Helpers
+  function createA4Canvas() {
+    const c = document.createElement("canvas");
+    c.width = A4_W;
+    c.height = A4_H;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, A4_W, A4_H);
+    ctx.textBaseline = "top";
+    return { canvas: c, ctx };
+  }
+
+  function roundedRectPath(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 3) {
+    const raw = String(text || "").replace(/\s+/g, " ").trim();
+    if (!raw) return y;
+    const words = raw.split(" ");
+    const lines = [];
+    let current = "";
+
+    for (let i = 0; i < words.length; i++) {
+      const test = current ? `${current} ${words[i]}` : words[i];
+      if (ctx.measureText(test).width <= maxWidth) {
+        current = test;
+      } else {
+        if (current) lines.push(current);
+        current = words[i];
+        if (lines.length >= maxLines) break;
+      }
+    }
+    if (current && lines.length < maxLines) lines.push(current);
+
+    lines.forEach((ln, idx) => {
+      let out = ln;
+      if (idx === maxLines - 1 && lines.length === maxLines && ctx.measureText(out).width > maxWidth) {
+        while (out.length > 3 && ctx.measureText(out + "...").width > maxWidth) {
+          out = out.slice(0, -1);
+        }
+        out += "...";
+      }
+      ctx.fillText(out, x, y + idx * lineHeight);
+    });
+
+    return y + lines.length * lineHeight;
+  }
+
+  // 3. Pure JavaScript Multi-Page PDF 1.4 Generator (No html2canvas / No CDN)
+  function buildPdfBytesFromCanvases(canvases) {
+    const enc = (s) => new TextEncoder().encode(s);
+    const chunks = [];
+    let offset = 0;
+    const push = (u8) => { chunks.push(u8); offset += u8.length; };
+
+    push(enc("%PDF-1.4\n"));
+    push(new Uint8Array([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]));
+
+    const pageCount = canvases.length;
+    const totalObjs = 2 + pageCount * 3;
+    const offsets = new Array(totalObjs + 1).fill(0);
+
+    offsets[1] = offset;
+    push(enc("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"));
+
+    const kids = [];
+    for (let i = 0; i < pageCount; i++) kids.push(`${3 + i * 3} 0 R`);
+    offsets[2] = offset;
+    push(enc(`2 0 obj\n<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pageCount} >>\nendobj\n`));
+
+    for (let i = 0; i < pageCount; i++) {
+      const c = canvases[i];
+      const dataUrl = c.toDataURL("image/jpeg", 0.94);
+      const b64 = dataUrl.split(",")[1];
+      const bin = atob(b64);
+      const jpg = new Uint8Array(bin.length);
+      for (let j = 0; j < bin.length; j++) jpg[j] = bin.charCodeAt(j);
+
+      const pObj = 3 + i * 3;
+      const imgObj = 4 + i * 3;
+      const cntObj = 5 + i * 3;
+
+      offsets[pObj] = offset;
+      push(enc(`${pObj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /Im0 ${imgObj} 0 R >> >> /Contents ${cntObj} 0 R >>\nendobj\n`));
+
+      offsets[imgObj] = offset;
+      push(enc(`${imgObj} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${c.width} /Height ${c.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpg.length} >>\nstream\n`));
+      push(jpg);
+      push(enc("\nendstream\nendobj\n"));
+
+      const cs = "q\n595.28 0 0 841.89 0 0 cm\n/Im0 Do\nQ\n";
+      offsets[cntObj] = offset;
+      push(enc(`${cntObj} 0 obj\n<< /Length ${cs.length} >>\nstream\n${cs}endstream\nendobj\n`));
+    }
+
+    const xrefStart = offset;
+    let xref = `xref\n0 ${totalObjs + 1}\n0000000000 65535 f \n`;
+    for (let k = 1; k <= totalObjs; k++) {
+      xref += String(offsets[k]).padStart(10, "0") + " 00000 n \n";
+    }
+    push(enc(xref));
+    push(enc(`trailer\n<< /Size ${totalObjs + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`));
+
+    const merged = new Uint8Array(offset);
+    let pos = 0;
+    for (const ch of chunks) {
+      merged.set(ch, pos);
+      pos += ch.length;
+    }
+    return merged;
+  }
+
+  function uint8ToBase64(u8) {
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < u8.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  // 4. Universal Save / Share Handler (Browser Direct Download + Android APK Share/Print)
+  async function saveCanvasesAsPdf(canvases, filename) {
+    const pdfBytes = buildPdfBytesFromCanvases(canvases);
+    const isNativeApk = Boolean(
+      window.Capacitor &&
+      typeof window.Capacitor.isNativePlatform === "function" &&
+      window.Capacitor.isNativePlatform()
+    );
+
+    if (isNativeApk) {
+      const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+      if (plugins.Filesystem && plugins.Share) {
+        const b64 = uint8ToBase64(pdfBytes);
+        const saved = await plugins.Filesystem.writeFile({
+          path: filename,
+          data: b64,
+          directory: "CACHE"
+        });
+        await plugins.Share.share({
+          title: filename,
+          text: "GURUKUL ONLINE APP — Official PDF",
+          url: saved.uri,
+          dialogTitle: "PDF सेव, शेयर या प्रिंट करें"
+        });
+        showToast("PDF तैयार है! Save या Print चुनें।", "SUCCESS");
+        return;
+      }
+      showToast("नया APK बिल्ड इंस्टॉल करें — अभी प्रीव्यू सेव किया जा रहा है।", "WARNING");
+    }
+
+    const blob = new Blob([pdfBytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    showToast("PDF सफलतापूर्वक डाउनलोड हो गई!", "SUCCESS");
+  }
+
+  // 5. DRAW OFFICIAL TAX INVOICE & ORDER RECEIPT (A4)
+  async function generateCanvasReceiptPDF(orderId, overrideOrderObj = null) {
+    const o = overrideOrderObj || (APP_STATE.orders && APP_STATE.orders[orderId]);
+    if (!o) return showToast("ऑर्डर विवरण नहीं मिला।", "DANGER");
+
+    showToast("रसीद PDF तैयार हो रही है...", "INFO");
+    try {
+      const logoImg = await loadImageForCanvas(APP_CONFIG.logoUrl);
+      const { canvas, ctx } = createA4Canvas();
+
+      // Outer Frame
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 4;
+      roundedRectPath(ctx, 50, 50, 1140, 1654, 18);
+      ctx.stroke();
+
+      // Header Section
+      if (logoImg) {
+        ctx.drawImage(logoImg, 84, 82, 112, 112);
+      }
+      const hx = logoImg ? 218 : 84;
+      ctx.fillStyle = "#312e81";
+      ctx.font = `900 38px ${FONT_FAMILY}`;
+      ctx.fillText(String(APP_CONFIG.appName || "GURUKUL ONLINE APP"), hx, 86);
+
+      ctx.fillStyle = "#0f172a";
+      ctx.font = `800 22px ${FONT_FAMILY}`;
+      ctx.fillText(String(APP_CONFIG.schoolName || "GURUKUL SENIOR SECONDARY SCHOOL DHANKOLI"), hx, 134);
+
+      ctx.fillStyle = "#475569";
+      ctx.font = `600 19px ${FONT_FAMILY}`;
+      drawWrappedText(
+        ctx,
+        `${APP_CONFIG.address || ""} | Helpline: ${(APP_CONFIG.helplines || []).join(", ")}`,
+        hx,
+        166,
+        940,
+        24,
+        2
+      );
+
+      // Header Divider
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(80, 224);
+      ctx.lineTo(1160, 224);
+      ctx.stroke();
+
+      // Official Banner
+      ctx.fillStyle = "#eef2ff";
+      roundedRectPath(ctx, 80, 246, 1080, 58, 10);
+      ctx.fill();
+      ctx.strokeStyle = "#c7d2fe";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = "#312e81";
+      ctx.font = `900 25px ${FONT_FAMILY}`;
+      ctx.textAlign = "center";
+      ctx.fillText("OFFICIAL TAX INVOICE & ORDER SLIP", A4_W / 2, 261);
+      ctx.textAlign = "left";
+
+      // Order Meta Grid (3 rows x 2 pairs)
+      const rows = [
+        ["Order ID", String(o.orderId || "-"), "Date & Time", String(formatDateTime(o.createdAt))],
+        ["Student Name", String(o.studentName || "-"), "ID / Mobile", `${o.studentCode || ""} ${o.studentPhone ? "| " + o.studentPhone : ""}`.trim() || "-"],
+        ["UPI UTR / Ref No.", String(o.utrNumber || "-"), "Payment Status", String(o.status || "PENDING")]
+      ];
+
+      let y = 326;
+      const rowH = 66;
+      const colX = [80, 310, 620, 860, 1160];
+
+      rows.forEach((r, idx) => {
+        // Label Backgrounds
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillRect(colX[0], y, colX[1] - colX[0], rowH);
+        ctx.fillRect(colX[2], y, colX[3] - colX[2], rowH);
+
+        // Cell Borders
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 2;
+        for (let c = 0; c < 4; c++) {
+          ctx.strokeRect(colX[c], y, colX[c + 1] - colX[c], rowH);
+        }
+
+        // Left Pair
+        ctx.fillStyle = "#334155";
+        ctx.font = `700 20px ${FONT_FAMILY}`;
+        ctx.fillText(r[0], colX[0] + 14, y + 21);
+
+        ctx.fillStyle = idx === 2 ? "#b91c1c" : (idx === 0 ? "#312e81" : "#0f172a");
+        ctx.font = `800 20px ${FONT_FAMILY}`;
+        drawWrappedText(ctx, r[1], colX[1] + 14, y + 21, colX[2] - colX[1] - 24, 24, 2);
+
+        // Right Pair
+        ctx.fillStyle = "#334155";
+        ctx.font = `700 20px ${FONT_FAMILY}`;
+        ctx.fillText(r[2], colX[2] + 14, y + 21);
+
+        ctx.fillStyle = idx === 2 ? (o.status === "APPROVED" ? "#047857" : "#b45309") : "#0f172a";
+        ctx.font = `800 20px ${FONT_FAMILY}`;
+        drawWrappedText(ctx, r[3], colX[3] + 14, y + 21, colX[4] - colX[3] - 24, 24, 2);
+
+        y += rowH;
+      });
+
+      // Delivery Address Box (if Book Order)
+      if (o.shippingAddress) {
+        const a = o.shippingAddress;
+        y += 24;
+        ctx.fillStyle = "#f8fafc";
+        roundedRectPath(ctx, 80, y, 1080, 128, 10);
+        ctx.fill();
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = "#475569";
+        ctx.font = `800 18px ${FONT_FAMILY}`;
+        ctx.fillText("DELIVERY ADDRESS (प्राप्तकर्ता का पता):", 100, y + 14);
+
+        ctx.fillStyle = "#0f172a";
+        ctx.font = `800 22px ${FONT_FAMILY}`;
+        ctx.fillText(`${a.fullName || o.studentName || ""}  (+91 ${a.phone || o.studentPhone || ""})`, 100, y + 44);
+
+        ctx.fillStyle = "#1e293b";
+        ctx.font = `600 20px ${FONT_FAMILY}`;
+        drawWrappedText(
+          ctx,
+          `${a.addressLine || ""}, ${a.city || ""}, ${a.state || ""} - PIN: ${a.pincode || ""}`,
+          100,
+          y + 78,
+          1040,
+          26,
+          2
+        );
+        y += 128;
+      }
+
+      // Items Table
+      y += 32;
+      const tCols = [80, 165, 860, 965, 1160];
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(tCols[0], y, 1080, 58);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `800 21px ${FONT_FAMILY}`;
+      ctx.fillText("#", tCols[0] + 32, y + 18);
+      ctx.fillText("Description", tCols[1] + 18, y + 18);
+      ctx.fillText("Qty", tCols[2] + 32, y + 18);
+      ctx.textAlign = "right";
+      ctx.fillText("Amount", tCols[4] - 18, y + 18);
+      ctx.textAlign = "left";
+      y += 58;
+
+      const items = (Array.isArray(o.items) && o.items.length)
+        ? o.items.map((it) => ({
+            title: String(it.title || o.title || "Item"),
+            qty: Number(it.qty) || 1,
+            amt: (Number(it.offerPrice || it.price) || 0) * (Number(it.qty) || 1)
+          }))
+        : [{ title: String(o.title || "Course / Book"), qty: 1, amt: Number(o.finalAmount) || 0 }];
+
+      items.forEach((it, idx) => {
+        const rh = 68;
+        ctx.fillStyle = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
+        ctx.fillRect(tCols[0], y, 1080, rh);
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 2;
+        for (let c = 0; c < 4; c++) {
+          ctx.strokeRect(tCols[c], y, tCols[c + 1] - tCols[c], rh);
+        }
+
+        ctx.fillStyle = "#0f172a";
+        ctx.font = `700 21px ${FONT_FAMILY}`;
+        ctx.fillText(String(idx + 1), tCols[0] + 32, y + 22);
+        drawWrappedText(ctx, it.title, tCols[1] + 18, y + 20, tCols[2] - tCols[1] - 32, 26, 2);
+        ctx.fillText(String(it.qty), tCols[2] + 38, y + 22);
+        ctx.textAlign = "right";
+        ctx.font = `800 22px ${FONT_FAMILY}`;
+        ctx.fillText(formatCurrency(it.amt), tCols[4] - 18, y + 22);
+        ctx.textAlign = "left";
+        y += rh;
+      });
+
+      // Net Paid Row
+      ctx.fillStyle = "#ecfdf5";
+      ctx.fillRect(tCols[0], y, 1080, 74);
+      ctx.strokeStyle = "#10b981";
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(tCols[0], y, 1080, 74);
+
+      ctx.fillStyle = "#065f46";
+      ctx.font = `900 24px ${FONT_FAMILY}`;
+      ctx.textAlign = "right";
+      ctx.fillText("Net Paid Amount (Online UPI):", tCols[3] - 16, y + 24);
+      ctx.font = `900 28px ${FONT_FAMILY}`;
+      ctx.fillText(formatCurrency(o.finalAmount), tCols[4] - 18, y + 22);
+      ctx.textAlign = "left";
+
+      // Footer & Signature
+      const fy = Math.max(y + 130, 1460);
+      ctx.fillStyle = "#475569";
+      ctx.font = `600 20px ${FONT_FAMILY}`;
+      ctx.fillText("• Digital Computer Generated Receipt — Valid Official Proof.", 84, fy);
+      ctx.fillText(`• Paid To UPI: ${o.paidToUpi || getLivePaymentConfig().upiId}`, 84, fy + 34);
+
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#312e81";
+      ctx.font = `900 26px ${FONT_FAMILY}`;
+      ctx.fillText("Gurukul Online", 1156, fy - 4);
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(910, fy + 36);
+      ctx.lineTo(1156, fy + 36);
+      ctx.stroke();
+      ctx.fillStyle = "#475569";
+      ctx.font = `700 19px ${FONT_FAMILY}`;
+      ctx.fillText("Authorized Signatory", 1156, fy + 46);
+      ctx.textAlign = "left";
+
+      await saveCanvasesAsPdf([canvas], `Receipt_${o.orderId}.pdf`);
+    } catch (err) {
+      console.error("Canvas Receipt PDF Error:", err);
+      showToast("रसीद PDF बनाने में त्रुटि: " + (err.message || ""), "DANGER");
+    }
+  }
+
+  // 6. DRAW ONE EXACT 1/3-A4 SHIPPING LABEL AT SPECIFIED Y (Height = 534px)
+  function drawShippingLabelSlot(ctx, o, qrImg, startY) {
+    const a = o.shippingAddress || {};
+    const x = 45;
+    const w = 1150;
+    const h = 534;
+
+    // White Card + Dashed Scissor-Cut Border
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    roundedRectPath(ctx, x, startY, w, h, 14);
+    ctx.fill();
+
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 3.5;
+    ctx.setLineDash([14, 9]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Top Header
+    ctx.fillStyle = "#312e81";
+    ctx.font = `900 27px ${FONT_FAMILY}`;
+    ctx.fillText("PREPAID BOOK PARCEL — DO NOT COLLECT CASH", x + 28, startY + 24);
+
+    ctx.fillStyle = "#334155";
+    ctx.font = `700 22px ${FONT_FAMILY}`;
+    ctx.fillText(
+      `Order ID: ${o.orderId || "-"}   |   Paid Online: ${formatCurrency(o.finalAmount)}`,
+      x + 28,
+      startY + 66
+    );
+
+    // QR Code (Top-Right)
+    if (qrImg) {
+      ctx.drawImage(qrImg, x + w - 134, startY + 18, 108, 108);
+    }
+
+    // Header Bottom Divider
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x + 24, startY + 136);
+    ctx.lineTo(x + w - 24, startY + 136);
+    ctx.stroke();
+
+    // Deliver To Box
+    const bx = x + 26;
+    const by = startY + 152;
+    const bw = w - 52;
+    const bh = 282;
+
+    ctx.fillStyle = "#f8fafc";
+    roundedRectPath(ctx, bx, by, bw, bh, 10);
+    ctx.fill();
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.fillStyle = "#475569";
+    ctx.font = `800 18px ${FONT_FAMILY}`;
+    ctx.fillText("DELIVER TO (प्राप्तकर्ता):", bx + 22, by + 18);
+
+    ctx.fillStyle = "#0f172a";
+    ctx.font = `900 30px ${FONT_FAMILY}`;
+    const nameStr = `${a.fullName || o.studentName || "Student"}  (+91 ${a.phone || o.studentPhone || ""})`;
+    drawWrappedText(ctx, nameStr, bx + 22, by + 48, bw - 44, 34, 1);
+
+    ctx.fillStyle = "#1e293b";
+    ctx.font = `600 24px ${FONT_FAMILY}`;
+    const addrEndY = drawWrappedText(ctx, String(a.addressLine || ""), bx + 22, by + 98, bw - 44, 34, 2);
+
+    const cityState = `${a.city || ""}, ${a.state || ""}`.replace(/^,\s*|,\s*$/g, "");
+    const pinY = Math.max(addrEndY + 12, by + 188);
+    ctx.fillStyle = "#0f172a";
+    ctx.font = `800 25px ${FONT_FAMILY}`;
+    ctx.fillText(cityState, bx + 22, pinY + 8);
+
+    // Highlighted PIN Pill
+    const pinText = `PIN: ${a.pincode || "------"}`;
+    ctx.font = `900 28px ${FONT_FAMILY}`;
+    const pinW = ctx.measureText(pinText).width + 34;
+    const pinX = bx + bw - pinW - 22;
+    ctx.fillStyle = "#e0e7ff";
+    roundedRectPath(ctx, pinX, pinY, pinW, 48, 8);
+    ctx.fill();
+    ctx.strokeStyle = "#6366f1";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = "#1e1b4b";
+    ctx.fillText(pinText, pinX + 17, pinY + 10);
+
+    // Footer Row
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 24, startY + 452);
+    ctx.lineTo(x + w - 24, startY + 452);
+    ctx.stroke();
+
+    ctx.fillStyle = "#0f172a";
+    ctx.font = `700 20px ${FONT_FAMILY}`;
+    drawWrappedText(ctx, `Items: ${o.title || "Books"}`, x + 28, startY + 468, 600, 26, 2);
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#334155";
+    ctx.font = `800 19px ${FONT_FAMILY}`;
+    ctx.fillText(
+      `FROM: ${APP_CONFIG.appName || "GURUKUL ONLINE APP"}, Dhankoli (${(APP_CONFIG.helplines && APP_CONFIG.helplines[0]) || "9772564359"})`,
+      x + w - 28,
+      startY + 474
+    );
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
+  // Single Shipping Label (Exact 1/3 A4 Size at Top of Page)
+  async function generateCanvasSingleLabelPDF(uid, orderId) {
+    const o = ADMIN_STATE.orders[uid] && ADMIN_STATE.orders[uid][orderId];
+    if (!o || !o.shippingAddress) return showToast("शिपिंग पता उपलब्ध नहीं है।", "DANGER");
+
+    showToast("शिपिंग लेबल PDF तैयार हो रही है...", "INFO");
+    try {
+      const qrUrl = buildQrImageUrl(`${o.orderId}|${o.shippingAddress.pincode || ""}`, 140);
+      const qrImg = await loadImageForCanvas(qrUrl);
+      const { canvas, ctx } = createA4Canvas();
+      drawShippingLabelSlot(ctx, o, qrImg, 40);
+      await saveCanvasesAsPdf([canvas], `ShippingLabel_${o.orderId}.pdf`);
+    } catch (err) {
+      console.error("Single Label PDF Error:", err);
+      showToast("लेबल PDF बनाने में त्रुटि: " + (err.message || ""), "DANGER");
+    }
+  }
+
+  // Bulk 3-Labels-Per-A4 Sheet (Exact 3 Labels per Page, Auto Multi-Page)
+  async function generateCanvasAllLabels3PerA4PDF() {
+    const bookOrders = getAllOrdersFlat().filter(
+      (o) => o.orderType === "BOOK" && o.status === "APPROVED" && o.shippingAddress
+    );
+    if (!bookOrders.length) return showToast("प्रिंट करने के लिए कोई अप्रूव्ड बुक ऑर्डर नहीं है।", "WARNING");
+
+    showToast(`${bookOrders.length} लेबल की A4 शीट तैयार हो रही है...`, "INFO");
+    try {
+      const qrImgs = await Promise.all(
+        bookOrders.map((o) =>
+          loadImageForCanvas(buildQrImageUrl(`${o.orderId}|${o.shippingAddress.pincode || ""}`, 140))
+        )
+      );
+
+      const canvases = [];
+      const slotYs = [40, 610, 1180]; // 3 slots × 534px + gaps = 1714px inside 1754px A4
+
+      for (let i = 0; i < bookOrders.length; i += 3) {
+        const { canvas, ctx } = createA4Canvas();
+        for (let s = 0; s < 3; s++) {
+          const idx = i + s;
+          if (idx >= bookOrders.length) break;
+          drawShippingLabelSlot(ctx, bookOrders[idx], qrImgs[idx], slotYs[s]);
+        }
+        canvases.push(canvas);
+      }
+
+      await saveCanvasesAsPdf(canvases, `Gurukul_Labels_3PerA4_${Date.now()}.pdf`);
+    } catch (err) {
+      console.error("3-Per-A4 Labels PDF Error:", err);
+      showToast("A4 लेबल शीट बनाने में त्रुटि: " + (err.message || ""), "DANGER");
+    }
+  }
+
+  // Bind immediately AND after window load so no earlier script can overwrite it
+  function bindDirectPdfHandlers() {
+    window.generateOrderReceiptPDF = generateCanvasReceiptPDF;
+    window.adminPrintShippingLabelPDF = generateCanvasSingleLabelPDF;
+    window.adminPrintAllLabels3PerA4 = generateCanvasAllLabels3PerA4PDF;
+  }
+  bindDirectPdfHandlers();
+  window.addEventListener("load", bindDirectPdfHandlers);
+})();
