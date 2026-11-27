@@ -853,3 +853,121 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 });
+/* =====================================================================
+   LAYER 2: ZERO-FRICTION SILENT SECURITY WATCHDOG (BOTTOM OF js/auth.js)
+   - Normal students feel 0% lag & 0 extra popups
+   - Silently catches Console/Admin Tampering, CBT Repeated Tab Switching
+     & Suspicious Activity, and logs directly to Admin Security Logs
+   ===================================================================== */
+(function initSilentSecurityWatchdog() {
+  const ORIGINAL_ADMIN_UID = String((typeof APP_CONFIG !== "undefined" && APP_CONFIG.adminUid) || "");
+  let cbtSwitchCount = 0;
+  let lastLogTimes = {};
+
+  function pushSilentSecurityLog(eventType, details, severity = "MEDIUM") {
+    try {
+      const user = (typeof auth !== "undefined" && auth.currentUser) || null;
+      if (!user || user.uid === ORIGINAL_ADMIN_UID) return;
+
+      const now = Date.now();
+      if (lastLogTimes[eventType] && now - lastLogTimes[eventType] < 20000) return;
+      lastLogTimes[eventType] = now;
+
+      const profile = (typeof APP_STATE !== "undefined" && APP_STATE.userProfile) || {};
+      const logId = `SEC_${now}_${Math.random().toString(36).slice(2, 6)}`;
+
+      db.ref(`securityLogs/${logId}`).set({
+        logId,
+        uid: user.uid,
+        name: profile.name || user.email || "Student",
+        studentCode: profile.studentCode || "",
+        phone: profile.phone || "",
+        eventType: `[${severity}] ${eventType}`,
+        details: String(details || "").slice(0, 260),
+        deviceId: typeof getOrCreateDeviceId === "function" ? getOrCreateDeviceId() : "",
+        timestamp: now
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
+  // 1. Admin Role / Console Tampering Guard (Zero impact on normal students)
+  setInterval(() => {
+    try {
+      const user = (typeof auth !== "undefined" && auth.currentUser) || null;
+      if (!user || !ORIGINAL_ADMIN_UID) return;
+      if (user.uid === ORIGINAL_ADMIN_UID) return;
+
+      const adminShell = document.getElementById("adminAppShell");
+      const adminVisible = adminShell && !adminShell.classList.contains("hidden");
+      const tamperedFlag = Boolean(typeof APP_STATE !== "undefined" && APP_STATE.isAdmin === true);
+      const tamperedUid = String(APP_CONFIG.adminUid || "") !== ORIGINAL_ADMIN_UID;
+
+      if (adminVisible || tamperedFlag || tamperedUid) {
+        if (adminShell) adminShell.classList.add("hidden");
+        APP_STATE.isAdmin = false;
+        APP_CONFIG.adminUid = ORIGINAL_ADMIN_UID;
+        pushSilentSecurityLog(
+          "ADMIN_TAMPER_ATTEMPT",
+          "Student account se Admin Panel ya adminUid modify karne ki koshish hui — auto-logout kiya gaya.",
+          "CRITICAL"
+        );
+        if (typeof handleUserLogout === "function") handleUserLogout(true);
+      }
+    } catch (e) {}
+  }, 5000);
+
+  // 2. Zero-Friction CBT Exam Monitor (Ignores 1-2 calls; silently logs 3+ exits)
+  document.addEventListener("visibilitychange", () => {
+    try {
+      const user = (typeof auth !== "undefined" && auth.currentUser) || null;
+      if (!user || user.uid === ORIGINAL_ADMIN_UID) return;
+
+      const testModal = document.getElementById("cbtExamModal") || document.getElementById("testEngineModal");
+      const isTestRunning = Boolean(testModal && !testModal.classList.contains("hidden"));
+
+      if (!isTestRunning) {
+        cbtSwitchCount = 0;
+        return;
+      }
+
+      if (document.hidden) {
+        cbtSwitchCount++;
+        if (cbtSwitchCount === 3 || cbtSwitchCount === 5) {
+          pushSilentSecurityLog(
+            "CBT_TAB_SWITCH",
+            `Live CBT Test ke dauran student ${cbtSwitchCount} baar app se bahar gaya.`,
+            cbtSwitchCount >= 5 ? "HIGH" : "MEDIUM"
+          );
+        }
+      }
+    } catch (e) {}
+  });
+
+  // 3. Auto-Register Admin Device for Push & Show Live Alert Sound on Critical Logs
+  let knownSecLogTs = Date.now();
+  if (typeof auth !== "undefined" && auth.onAuthStateChanged) {
+    auth.onAuthStateChanged((user) => {
+      if (!user || user.uid !== ORIGINAL_ADMIN_UID) return;
+
+      setTimeout(() => {
+        if (typeof enableAppPushNotifications === "function") {
+          enableAppPushNotifications(false);
+        }
+        db.ref(`fcmTokens/${user.uid}/isAdmin`).set(true).catch(() => {});
+      }, 1800);
+
+      db.ref("securityLogs").limitToLast(1).on("child_added", (snap) => {
+        const log = snap.val();
+        if (!log || (Number(log.timestamp) || 0) <= knownSecLogTs) return;
+        knownSecLogTs = Number(log.timestamp) || Date.now();
+
+        if (String(log.eventType || "").includes("CRITICAL") || String(log.eventType || "").includes("HIGH")) {
+          if (typeof triggerAlertFeedback === "function") triggerAlertFeedback();
+          if (typeof showToast === "function") {
+            showToast(`🚨 Security Alert: ${log.name} (${log.eventType})`, "DANGER");
+          }
+        }
+      });
+    });
+  }
+})();
